@@ -20,7 +20,7 @@ services:
     image: n8nio/n8n:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5679:5678"  # Localhost only for security
+      - "127.0.0.1:5679:5678"
     environment:
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
@@ -37,15 +37,45 @@ services:
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - N8N_RUNNERS_ENABLED=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
-      - HELLOCASH_BASE_URL=https://hellocash.de
+      
+      # helloCash Config
+      - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://hellocash.de}
+      
+      # Odoo Connection
+      - ODOO_BASE_URL=${ODOO_BASE_URL:-http://localhost:5679}
+      - ODOO_DB=${ODOO_DB:-blumenladen}
+      - ODOO_UID=${ODOO_UID:-6}
+      
+      # Account IDs (from account_group)
+      - ACCOUNT_KASSE=${ACCOUNT_KASSE:-15}
+      - ACCOUNT_BANK=${ACCOUNT_BANK:-16}
+      - ACCOUNT_ERLOESE=${ACCOUNT_ERLOESE:-22}
+      - ACCOUNT_GUTSCHEIN=${ACCOUNT_GUTSCHEIN:-21}
+      - ACCOUNT_UST_19=${ACCOUNT_UST_19:-19}
+      - ACCOUNT_UST_7=${ACCOUNT_UST_7:-20}
+      
+      # Tax IDs (from account_tax)
+      - TAX_ID_19=${TAX_ID_19:-54}
+      - TAX_ID_7=${TAX_ID_7:-26}
+      
+      # Journal ID (from account_journal)
+      - ODOO_JOURNAL_ID=${ODOO_JOURNAL_ID:-15}
+      
+      # Sync Settings
+      - SYNC_HOUR=${SYNC_HOUR:-2}
+      - ERROR_EMAIL=${ERROR_EMAIL:-admin@blumenladen.de}
+      
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - n8n-internal
 
 volumes:
   n8n_data:
   postgres_data:
+
 networks:
   n8n-internal:
