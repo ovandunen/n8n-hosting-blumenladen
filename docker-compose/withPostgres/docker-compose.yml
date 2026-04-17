@@ -37,9 +37,10 @@ services:
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - N8N_RUNNERS_ENABLED=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - ODOO_PASSWORD=${ODOO_PASSWORD} 
       
       # helloCash Config
-      - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://hellocash.de}
+      - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://api.hellocash.business/api/v1}
       
       # Odoo Connection
       - ODOO_BASE_URL=${ODOO_BASE_URL:-http://localhost:5679}
@@ -63,7 +64,7 @@ services:
       
       # Sync Settings
       - SYNC_HOUR=${SYNC_HOUR:-2}
-      - ERROR_EMAIL=${ERROR_EMAIL:-admin@blumenladen.de}
+      - ERROR_EMAIL=${ERROR_EMAIL:-yobantu@gmx.net}
       
     volumes:
       - n8n_data:/home/node/.n8n
