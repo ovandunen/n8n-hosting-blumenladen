@@ -81,7 +81,7 @@ const config = {
   /** Retry policy for HTTP / RPC (NFR-3). */
   retry: {
     maxAttempts: 3,
-    intervalMs: 300000,
+    intervalMs: 5000,
   },
 
   syncHour: parseIntEnv('SYNC_HOUR', $env.SYNC_HOUR),

@@ -4,10 +4,20 @@
  * Phase 2: GET /api/v1/invoices per linked invoice number (payment + taxes).
  *
  * Env: HELLOCASH_API_TOKEN (required), HELLOCASH_LIST_PATH (default /api/v1/cashBook),
- * HELLOCASH_INVOICES_PATH (default /api/v1/invoices), HELLOCASH_DAYS_BACK (info only unless query vars set),
- * HELLOCASH_QUERY_FROM / HELLOCASH_QUERY_TO (optional YYYY-MM-DD added to cashbook query if set).
+ * HELLOCASH_INVOICES_PATH (default /api/v1/invoices), HELLOCASH_DAYS_BACK (metadata only),
+ * HELLOCASH_QUERY_FROM / HELLOCASH_QUERY_TO → cashbook/invoices query dateFrom & dateTo (Apiary style).
+ * Cashbook/invoices use: limit, offset, search, dateFrom, dateTo, mode, showDetails (mock-aligned).
  * Optional: HELLOCASH_IGNORE_SYNC_HOUR=1, SYNC_HOUR gate via Config.
+ *
+ * Note: n8n Code sandbox may not define URLSearchParams — use encodeURIComponent helper below.
  */
+
+/** @param {Record<string, string>} params */
+function buildQueryString(params) {
+  return Object.keys(params)
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`)
+    .join('&');
+}
 
 const config = $('Config Loader').first().json;
 const token = $env.HELLOCASH_API_TOKEN?.trim();
@@ -38,11 +48,23 @@ const invoicesPath =
   ($env.HELLOCASH_INVOICES_PATH && String($env.HELLOCASH_INVOICES_PATH).trim()) || '/api/v1/invoices';
 const daysBack = parseInt(String($env.HELLOCASH_DAYS_BACK || '1'), 10);
 
-const cashbookQuery = new URLSearchParams({ limit: '1000', offset: '0' });
-const qFrom = $env.HELLOCASH_QUERY_FROM && String($env.HELLOCASH_QUERY_FROM).trim();
-const qTo = $env.HELLOCASH_QUERY_TO && String($env.HELLOCASH_QUERY_TO).trim();
-if (qFrom) cashbookQuery.set('from', qFrom);
-if (qTo) cashbookQuery.set('to', qTo);
+const qFrom = ($env.HELLOCASH_QUERY_FROM && String($env.HELLOCASH_QUERY_FROM).trim()) || '';
+const qTo = ($env.HELLOCASH_QUERY_TO && String($env.HELLOCASH_QUERY_TO).trim()) || '';
+
+const cashbookOffset =
+  $env.HELLOCASH_CASHBOOK_OFFSET !== undefined && $env.HELLOCASH_CASHBOOK_OFFSET !== null
+    ? String($env.HELLOCASH_CASHBOOK_OFFSET)
+    : '0';
+
+const cashbookQuery = buildQueryString({
+  limit: String($env.HELLOCASH_CASHBOOK_LIMIT || '1000'),
+  offset: cashbookOffset,
+  search: String($env.HELLOCASH_CASHBOOK_SEARCH || ''),
+  dateFrom: qFrom,
+  dateTo: qTo,
+  mode: String($env.HELLOCASH_CASHBOOK_MODE || ''),
+  showDetails: String($env.HELLOCASH_CASHBOOK_SHOW_DETAILS || ''),
+});
 
 const pathNorm = listPath.startsWith('/') ? listPath : `/${listPath}`;
 const cashbookUrl = `${baseUrl}${pathNorm}?${cashbookQuery}`;
@@ -108,7 +130,29 @@ const invoicesMap = new Map();
 
 for (const invNum of invoiceNumbers) {
   try {
-    const invQuery = new URLSearchParams({ number: invNum, limit: '1', offset: '0' });
+    const invOffset =
+      $env.HELLOCASH_INVOICES_OFFSET !== undefined && $env.HELLOCASH_INVOICES_OFFSET !== null
+        ? String($env.HELLOCASH_INVOICES_OFFSET)
+        : '0';
+    const invDateFrom =
+      $env.HELLOCASH_INVOICES_DATE_FROM !== undefined && $env.HELLOCASH_INVOICES_DATE_FROM !== null
+        ? String($env.HELLOCASH_INVOICES_DATE_FROM)
+        : qFrom;
+    const invDateTo =
+      $env.HELLOCASH_INVOICES_DATE_TO !== undefined && $env.HELLOCASH_INVOICES_DATE_TO !== null
+        ? String($env.HELLOCASH_INVOICES_DATE_TO)
+        : qTo;
+
+    const invQuery = buildQueryString({
+      limit: String($env.HELLOCASH_INVOICES_LIMIT || '1000'),
+      offset: invOffset,
+      search: invNum,
+      dateFrom: invDateFrom,
+      dateTo: invDateTo,
+      mode: String($env.HELLOCASH_INVOICES_MODE || ''),
+      showDetails: String($env.HELLOCASH_INVOICES_SHOW_DETAILS || ''),
+    });
+
     const invResponse = await this.helpers.httpRequest({
       method: 'GET',
       url: `${invoiceBaseUrl}?${invQuery}`,
@@ -118,8 +162,9 @@ for (const invNum of invoiceNumbers) {
     });
     const invList = invResponse?.invoices;
     if (Array.isArray(invList) && invList.length > 0) {
-      const inv = invList[0];
-      if (inv.invoice_cancellation !== '1') {
+      const inv =
+        invList.find((x) => x && String(x.invoice_number) === String(invNum)) ?? invList[0];
+      if (inv && inv.invoice_cancellation !== '1') {
         invoicesMap.set(invNum, inv);
       }
     }
