@@ -28,6 +28,13 @@ services:
       - DB_POSTGRESDB_DATABASE=n8n
       - DB_POSTGRESDB_USER=n8n
       - DB_POSTGRESDB_PASSWORD=n8n_password
+      - N8N_EMAIL_MODE=smtp
+      - N8N_SMTP_HOST=${SMTP_HOST:-mail.gmx.com}
+      - N8N_SMTP_PORT=587
+      - N8N_SMTP_SSL=false
+      - N8N_SMTP_USER=i${SMTP_USER:-yobantu@gmx.net}
+      - N8N_SMTP_PASS=${SMTP_PASSWORD}    # ← reads from .env
+      - N8N_SMTP_SENDER=${SMTP_SENDER:-yobantu@gmx.net}
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
       - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-changeme}
@@ -41,9 +48,11 @@ services:
       
       # helloCash Config
       - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://api.hellocash.business/api/v1}
+      - HELLOCASH_API_TOKEN=${HELLOCASH_API_TOKEN}
+      - HELLOCASH_IGNORE_SYNC_HOUR=true
       
       # Odoo Connection
-      - ODOO_BASE_URL=${ODOO_BASE_URL:-http://localhost:5679}
+      - ODOO_BASE_URL=${ODOO_BASE_URL:-http://localhost:8069}
       - ODOO_DB=${ODOO_DB:-blumenladen}
       - ODOO_UID=${ODOO_UID:-6}
       
@@ -63,8 +72,8 @@ services:
       - ODOO_JOURNAL_ID=${ODOO_JOURNAL_ID:-15}
       
       # Sync Settings
-      - SYNC_HOUR=${SYNC_HOUR:-2}
-      - ERROR_EMAIL=${ERROR_EMAIL:-yobantu@gmx.net}
+      - SYNC_HOUR=${SYNC_HOUR:-22}
+      - ERROR_EMAIL=${ERROR_EMAIL:-ovd@maola.tech}
       
     volumes:
       - n8n_data:/home/node/.n8n
