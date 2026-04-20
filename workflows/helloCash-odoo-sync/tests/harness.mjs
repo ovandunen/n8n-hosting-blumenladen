@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const srcDir = path.join(__dirname, '..', 'src');
+const srcDir = path.join(__dirname, '..', 'src', 'nodes');
 
 export function readNodeSource(fileName) {
   return fs.readFileSync(path.join(srcDir, fileName), 'utf8');

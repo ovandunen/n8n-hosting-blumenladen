@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "pretest": "npm run build",
     "test": "node --test tests/*.test.mjs",
     "validate:workflow": "node scripts/validate-workflow.mjs"
   },
