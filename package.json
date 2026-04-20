@@ -1,0 +1,10 @@
+{
+  "name": "n8n-hosting",
+  "private": true,
+  "description": "n8n hosting charts and workflow sources. Workflow JSON is imported by n8n, not executed with Node.",
+  "scripts": {
+    "hellocash:validate-workflow": "node workflows/helloCash-odoo-sync/scripts/validate-workflow.mjs",
+    "hellocash:build-workflow": "node workflows/helloCash-odoo-sync/build-workflow.mjs",
+    "hellocash:test": "npm test --prefix workflows/helloCash-odoo-sync"
+  }
+}

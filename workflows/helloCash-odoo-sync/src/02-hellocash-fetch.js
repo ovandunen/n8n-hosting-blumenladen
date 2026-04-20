@@ -4,7 +4,8 @@
  * Phase 2: GET /api/v1/invoices per linked invoice number (payment + taxes).
  *
  * Env: HELLOCASH_API_TOKEN (required), HELLOCASH_LIST_PATH (default /api/v1/cashBook),
- * HELLOCASH_INVOICES_PATH (default /api/v1/invoices), HELLOCASH_DAYS_BACK (metadata only),
+ * HELLOCASH_INVOICES_PATH (default /api/v1/invoices), HELLOCASH_DAYS_BACK (metadata only).
+ * HELLOCASH_BASE_URL may be origin-only or include /api/v1 — overlapping path segments are merged (no /api/v1/api/v1/...).
  * HELLOCASH_QUERY_FROM / HELLOCASH_QUERY_TO → cashbook/invoices query dateFrom & dateTo (Apiary style).
  * Cashbook/invoices use: limit, offset, search, dateFrom, dateTo, mode, showDetails (mock-aligned).
  * Optional: HELLOCASH_IGNORE_SYNC_HOUR=1, SYNC_HOUR gate via Config.
@@ -12,11 +13,319 @@
  * Note: n8n Code sandbox may not define URLSearchParams — use encodeURIComponent helper below.
  */
 
-/** @param {Record<string, string>} params */
+/**
+ * Only include query keys that are actually set (not null/undefined; strings non-empty after trim).
+ * @param {unknown} v
+ */
+function queryParamHasValue(v) {
+  if (v === null || v === undefined) return false;
+  if (typeof v === 'string') return v.trim() !== '';
+  return true;
+}
+
+/** @param {Record<string, string | number | boolean>} params */
 function buildQueryString(params) {
   return Object.keys(params)
-    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`)
+    .filter((k) => queryParamHasValue(params[k]))
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(String(params[k]))}`)
     .join('&');
+}
+
+/**
+ * Merge HELLOCASH_BASE_URL with an absolute path without duplicating shared segments.
+ * e.g. base https://host/api/v1 + path /api/v1/cashBook → https://host/api/v1/cashBook
+ * Protocol-relative bases (//host/...) are normalized to https://host/...
+ *
+ * @param {string} baseUrlRaw
+ * @param {string} pathRaw absolute path, e.g. /api/v1/cashBook
+ */
+function joinBaseUrlAndPath(baseUrlRaw, pathRaw) {
+  let baseStr = String(baseUrlRaw || '').trim();
+  if (baseStr.startsWith('//')) baseStr = `https:${baseStr}`;
+  baseStr = baseStr.replace(/\/+$/, '');
+
+  const relPath = pathRaw.startsWith('/') ? pathRaw : `/${pathRaw}`;
+
+  try {
+    const u = new URL(baseStr);
+    const rawBasePath = u.pathname || '/';
+    const basePath = rawBasePath.replace(/\/+$/, '') || '';
+    const baseSegs = basePath.split('/').filter(Boolean);
+    const pathSegs = relPath.split('/').filter(Boolean);
+
+    let overlap = 0;
+    const max = Math.min(baseSegs.length, pathSegs.length);
+    for (let k = max; k >= 1; k--) {
+      let ok = true;
+      for (let i = 0; i < k; i++) {
+        if (baseSegs[baseSegs.length - k + i] !== pathSegs[i]) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        overlap = k;
+        break;
+      }
+    }
+
+    const remainder = pathSegs.slice(overlap);
+    const mergedSegs = [...baseSegs, ...remainder];
+    u.pathname = `/${mergedSegs.join('/')}`;
+    return u.toString().replace(/\/+$/, '');
+  } catch {
+    return `${baseStr}${relPath}`;
+  }
+}
+
+/**
+ * n8n httpRequest: omit null/undefined options (some versions reject explicit nulls).
+ * @param {Record<string, unknown>} opts
+ */
+function httpRequestOpts(opts) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [k, v] of Object.entries(opts)) {
+    if (v !== null && v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Drop null/undefined and empty strings from nested objects for logs (avoid "parameters" with no value).
+ * @param {unknown} value
+ */
+function compactForDisplay(value) {
+  if (value === null || value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    const arr = value.map(compactForDisplay).filter((x) => x !== undefined);
+    return arr.length ? arr : undefined;
+  }
+  if (typeof value === 'object') {
+    const o = {};
+    for (const [k, v] of Object.entries(value)) {
+      const c = compactForDisplay(v);
+      if (c !== undefined) o[k] = c;
+    }
+    return Object.keys(o).length ? o : undefined;
+  }
+  if (typeof value === 'string' && value.trim() === '') return undefined;
+  return value;
+}
+
+/**
+ * One or two sentences an operator can act on (not only raw status/body).
+ * @param {string|number} status
+ * @param {{ name?: string, code?: string, httpCode?: string, message?: string, description?: string }} hint
+ * @param {string} bodyStr
+ */
+function deriveFailureExplanation(status, hint, bodyStr) {
+  const code = String(hint?.code ?? '');
+  const msg = String(hint?.message ?? hint?.description ?? '');
+  const statusNum = typeof status === 'number' ? status : parseInt(String(status), 10);
+  const body = String(bodyStr ?? '');
+  const combined = `${msg} ${code} ${body}`.toLowerCase();
+
+  const parts = [];
+
+  if (Number.isFinite(statusNum)) {
+    if (statusNum === 401 || statusNum === 403) {
+      parts.push(
+        'The API rejected authentication/authorization — verify HELLOCASH_API_TOKEN and that HELLOCASH_BASE_URL matches the environment where that token is valid.',
+      );
+    } else if (statusNum === 404) {
+      parts.push(
+        'The server returned 404 — check HELLOCASH_BASE_URL and list/invoices paths (HELLOCASH_LIST_PATH, HELLOCASH_INVOICES_PATH).',
+      );
+    } else if (statusNum === 400 || statusNum === 422) {
+      parts.push(
+        'The server rejected the request parameters — review date/search/limit/offset env vars against the API contract.',
+      );
+    } else if (statusNum === 429) {
+      parts.push('Rate limited (429) — retry later or reduce call volume.');
+    } else if (statusNum >= 500 && statusNum < 600) {
+      parts.push(
+        `Server error (${statusNum}) — HelloCash may be unavailable; retry later or check their service status.`,
+      );
+    } else if (statusNum >= 200 && statusNum < 300) {
+      parts.push(
+        'HTTP status looks successful but the client still failed — the body may not be JSON while json:true is set, or the client threw for another reason.',
+      );
+    }
+  }
+
+  if (status === 'no-status' || !Number.isFinite(statusNum)) {
+    if (/enotfound|getaddrinfo|eai_again/i.test(combined) || code === 'ENOTFOUND') {
+      parts.push('DNS or hostname resolution failed — check HELLOCASH_BASE_URL and network/DNS.');
+    }
+    if (/econnrefused/i.test(combined) || code === 'ECONNREFUSED') {
+      parts.push('Connection refused — wrong host/port, service not listening, or firewall.');
+    }
+    if (/etimedout|esockettimedout|timeout/i.test(combined) || /timeout/i.test(code)) {
+      parts.push('Request timed out — increase HelloCash timeout in config, or check network/API availability.');
+    }
+    if (/cert|ssl|tls|unable_to_verify/i.test(combined)) {
+      parts.push('TLS/certificate error — check HTTPS URL, proxy, or corporate TLS inspection.');
+    }
+  }
+
+  if (/unexpected token|not valid json|invalid json|json parse/i.test(combined)) {
+    parts.push('Response was not valid JSON — wrong URL often returns HTML or an error page instead of the API.');
+  }
+  if (/<!doctype html|<html/i.test(body)) {
+    parts.push('Body looks like HTML — usually wrong API URL, redirect to a web login, or a gateway error page.');
+  }
+
+  if (parts.length === 0) {
+    parts.push(
+      'Could not infer a specific cause from status/body — use HTTP status, hint fields, and response snippet below.',
+    );
+  }
+
+  return parts.join(' ');
+}
+
+/**
+ * Best-effort HTTP status from n8n httpRequest / axios / nested cause chain.
+ * @param {unknown} e
+ */
+function resolveHttpStatus(e) {
+  /** @param {unknown} x */
+  const asStatus = (x) => {
+    if (x === undefined || x === null || x === '') return undefined;
+    if (typeof x === 'number' && Number.isFinite(x)) return x;
+    const n = parseInt(String(x), 10);
+    if (Number.isFinite(n)) return n;
+    if (typeof x === 'string') return x.trim() || undefined;
+    return undefined;
+  };
+
+  let cur = e;
+  for (let d = 0; d < 6 && cur != null; d++) {
+    if (typeof cur !== 'object') break;
+    const o = /** @type {Record<string, unknown>} */ (cur);
+    const u =
+      asStatus(o.response?.status) ??
+      asStatus(o.response?.statusCode) ??
+      asStatus(
+        o.error && typeof o.error === 'object'
+          ? /** @type {{ status?: unknown, statusCode?: unknown }} */ (o.error).status ??
+              /** @type {{ status?: unknown, statusCode?: unknown }} */ (o.error).statusCode ??
+              undefined
+          : undefined,
+      ) ??
+      asStatus(o.httpCode) ??
+      asStatus(o.statusCode) ??
+      asStatus(o.status);
+    if (u !== undefined) return u;
+    cur = o.cause;
+  }
+
+  const msg = String(
+    (typeof e === 'object' && e && 'message' in e && /** @type {{ message: unknown }} */ (e).message) || '',
+  );
+  const m =
+    msg.match(/\bstatus code\s+(\d{3})\b/i) ??
+    msg.match(/\bHTTP\s+(\d{3})\b/) ??
+    msg.match(/^\s*(\d{3})\s/);
+  if (m) return parseInt(m[1], 10);
+
+  return 'no-status';
+}
+
+/**
+ * n8n httpRequest errors are often NodeApiError / wrapped request errors — not always axios-shaped (e.response).
+ */
+function extractHttpFailureDetails(e) {
+  const status = resolveHttpStatus(e);
+
+  let body =
+    e?.response?.data ??
+    e?.response?.body ??
+    e?.error ??
+    e?.description ??
+    (Array.isArray(e?.messages) ? e.messages.join('; ') : e?.messages);
+
+  if ((body === undefined || body === null || body === '') && e?.cause) {
+    const c = e.cause;
+    body =
+      c?.response?.data ??
+      c?.response?.body ??
+      c?.message ??
+      (typeof c === 'string' ? c : undefined);
+  }
+
+  let bodyStr = 'no body';
+  if (body !== undefined && body !== null && body !== '') {
+    bodyStr = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+  }
+
+  const hint = {
+    name: e?.name,
+    code: e?.code,
+    httpCode: e?.httpCode,
+    description: e?.description,
+    message: e?.message,
+    stack: typeof e?.stack === 'string' ? e.stack : undefined,
+    errorKeys: e && typeof e === 'object' ? Object.keys(e) : [],
+  };
+
+  /** @param {unknown} err @param {number} depth */
+  function shallowDump(err, depth) {
+    if (err == null) return null;
+    if (typeof err !== 'object') return String(err);
+    const o = {};
+    try {
+      for (const k of Object.getOwnPropertyNames(err)) {
+        try {
+          let v = /** @type {object} */ (err)[k];
+          if (v && typeof v === 'object' && depth < 2) {
+            v = shallowDump(v, depth + 1);
+          }
+          if (typeof v === 'string' && v.length > 4000) v = v.slice(0, 4000) + '…';
+          o[k] = v;
+        } catch {
+          o[k] = '[unreadable]';
+        }
+      }
+    } catch {
+      return '[dump failed]';
+    }
+    return o;
+  }
+
+  const rawDump = shallowDump(e, 0);
+  let causeChain = [];
+  let c = e?.cause;
+  let depth = 0;
+  while (c != null && depth < 5) {
+    causeChain.push({
+      depth,
+      message: c?.message ?? String(c),
+      name: c?.name,
+      stack: typeof c?.stack === 'string' ? c.stack.slice(0, 2000) : undefined,
+    });
+    c = c?.cause;
+    depth++;
+  }
+
+  return { status, bodyStr, hint, rawDump, causeChain };
+}
+
+/** Mask secret for logs (never log full token). */
+function maskToken(t) {
+  const s = String(t || '');
+  if (!s) return '(empty)';
+  if (s.length <= 8) return `${s.slice(0, 2)}…(${s.length} chars)`;
+  return `${s.slice(0, 4)}…${s.slice(-2)} (len=${s.length})`;
+}
+
+function safeJson(obj, space) {
+  try {
+    return JSON.stringify(obj, null, space);
+  } catch {
+    return '[JSON.stringify failed — possibly circular]';
+  }
 }
 
 const config = $('Config Loader').first().json;
@@ -42,7 +351,11 @@ if (!ignoreHour && hour !== config.syncHour) {
   ];
 }
 
-const baseUrl = config.hellocash.baseUrl.replace(/\/+$/, '');
+let baseUrl = String(config.hellocash.baseUrl || '')
+  .trim()
+  .replace(/\/+$/, '');
+if (baseUrl.startsWith('//')) baseUrl = `https:${baseUrl}`;
+
 const listPath = ($env.HELLOCASH_LIST_PATH && String($env.HELLOCASH_LIST_PATH).trim()) || '/api/v1/cashBook';
 const invoicesPath =
   ($env.HELLOCASH_INVOICES_PATH && String($env.HELLOCASH_INVOICES_PATH).trim()) || '/api/v1/invoices';
@@ -67,10 +380,17 @@ const cashbookQuery = buildQueryString({
 });
 
 const pathNorm = listPath.startsWith('/') ? listPath : `/${listPath}`;
-const cashbookUrl = `${baseUrl}${pathNorm}?${cashbookQuery}`;
+const cashbookUrlNoQuery = joinBaseUrlAndPath(baseUrl, pathNorm);
+const cashbookUrl = cashbookQuery ? `${cashbookUrlNoQuery}?${cashbookQuery}` : cashbookUrlNoQuery;
+
+if (!String(baseUrl || '').trim()) {
+  throw new Error(
+    'HelloCash Fetch: config.hellocash.baseUrl is empty. Re-run Config Loader and set HELLOCASH_BASE_URL (non-empty).',
+  );
+}
 
 const invPathNorm = invoicesPath.startsWith('/') ? invoicesPath : `/${invoicesPath}`;
-const invoiceBaseUrl = `${baseUrl}${invPathNorm}`;
+const invoiceBaseUrl = joinBaseUrlAndPath(baseUrl, invPathNorm);
 
 const { maxAttempts, intervalMs } = config.retry;
 /** @type {Record<string, string>} */
@@ -82,24 +402,148 @@ const authHeaders = {
 let lastErr;
 /** @type {unknown} */
 let cashbookResponse;
+/** @type {object[]} */
+const cashbookAttemptHistory = [];
+
 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  const attemptStartedAt = new Date().toISOString();
   try {
-    cashbookResponse = await this.helpers.httpRequest({
-      method: 'GET',
-      url: cashbookUrl,
-      headers: authHeaders,
-      timeout: config.hellocash.timeoutMs,
-      json: true,
-    });
+    cashbookResponse = await this.helpers.httpRequest(
+      httpRequestOpts({
+        method: 'GET',
+        url: cashbookUrl,
+        headers: authHeaders,
+        timeout: config.hellocash.timeoutMs,
+        json: true,
+      }),
+    );
     lastErr = undefined;
     break;
   } catch (e) {
-    lastErr = e;
-    if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, intervalMs));
+    const { status, bodyStr, hint, rawDump, causeChain } = extractHttpFailureDetails(e);
+    const hintCompact = compactForDisplay(hint) ?? {};
+    const failureExplanation = deriveFailureExplanation(status, hint, bodyStr);
+    const reqUrl = cashbookUrl;
+
+    const attemptRecord = {
+      attempt,
+      of: maxAttempts,
+      at: attemptStartedAt,
+      status,
+      httpStatus: status,
+      failureExplanation,
+      url: reqUrl,
+      urlParts: {
+        baseUrl,
+        pathNorm,
+        joinedPath: cashbookUrlNoQuery,
+        ...(cashbookQuery ? { query: cashbookQuery } : {}),
+        fullUrlLength: String(reqUrl || '').length,
+      },
+      request: {
+        method: 'GET',
+        timeoutMs: config.hellocash.timeoutMs,
+        accept: authHeaders.Accept,
+        authorization: `Bearer ${maskToken(token)}`,
+      },
+      responseBody: bodyStr,
+      responseBodyLength: String(bodyStr || '').length,
+      hint: hintCompact,
+      rawDump,
+      causeChain,
+    };
+    cashbookAttemptHistory.push(attemptRecord);
+
+    console.error('HelloCash cashbook fetch failed — attempt detail', attemptRecord);
+
+    lastErr = new Error(
+      `HTTP ${status} | HelloCash cashbook attempt ${attempt}/${maxAttempts} failed\n` +
+        `Why: ${failureExplanation}\n` +
+        `URL: ${reqUrl}\n` +
+        `Response: ${bodyStr}\n` +
+        `Hint: ${safeJson(hintCompact, 2)}\n` +
+        `Cause chain: ${safeJson(causeChain, 2)}\n` +
+        `Raw dump: ${safeJson(rawDump, 2)}`,
+    );
+
+    if (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
   }
 }
 if (cashbookResponse === undefined) {
-  throw lastErr || new Error('Cashbook fetch failed after retries');
+  const lastAtt =
+    cashbookAttemptHistory.length > 0
+      ? cashbookAttemptHistory[cashbookAttemptHistory.length - 1]
+      : {};
+
+  const bodyOneLine = String(lastAtt.responseBody ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+  const hintMsg = lastAtt.hint?.message ?? lastAtt.hint?.description ?? 'n/a';
+  const hintCode = lastAtt.hint?.code ?? lastAtt.hint?.httpCode ?? 'n/a';
+  const failureExplanation =
+    lastAtt.failureExplanation ??
+    deriveFailureExplanation(lastAtt.status ?? 'no-status', lastAtt.hint ?? {}, bodyOneLine);
+
+  const diagnostic = {
+    phase: 'cashbook GET',
+    httpStatus: lastAtt.status ?? 'no-status',
+    nodeErrorCode: hintCode,
+    failureExplanation,
+    failedAfterAttempts: maxAttempts,
+    retryIntervalMs: intervalMs,
+    clock: { hour, syncHour: config.syncHour, ignoreSyncHour: ignoreHour },
+    token: maskToken(token),
+    cashbookUrl,
+    invoiceBaseUrl,
+    envPaths: {
+      HELLOCASH_LIST_PATH: listPath,
+      HELLOCASH_INVOICES_PATH: invoicesPath,
+    },
+    attemptHistory: cashbookAttemptHistory,
+    lastErrorMessage: lastErr?.message ?? 'unknown',
+    lastErrorStack: lastErr?.stack ?? 'no stack',
+  };
+
+  const diagnosticJson = safeJson(diagnostic, 2);
+
+  console.error('HelloCash cashbook — FINAL FAILURE (all attempts exhausted)', {
+    httpStatus: lastAtt.status ?? 'no-status',
+    nodeErrorCode: hintCode,
+    ...diagnostic,
+  });
+
+  const explainOneLine = String(failureExplanation).replace(/\s+/g, ' ').trim().slice(0, 280);
+
+  const httpStatusStr =
+    lastAtt.status !== undefined && lastAtt.status !== null && lastAtt.status !== 'no-status'
+      ? `HTTP ${lastAtt.status}`
+      : 'HTTP status unknown (no response — network/DNS/TLS/wrong URL?)';
+
+  // n8n Error panel often shows only the FIRST line — lead with HTTP + node error code.
+  const errorFirstLine =
+    `${httpStatusStr} | nodeErrorCode=${hintCode} | HelloCash cashbook GET: ${maxAttempts} attempts failed | ${explainOneLine} | ${hintMsg} | URL=${cashbookUrl} | body=${bodyOneLine || '(empty)'}`;
+
+  // One summary line already has URL + body; avoid repeating them via lastErr.message/stack here
+  // (those are still in diagnostic.lastErrorMessage / lastErrorStack / attemptHistory for tools).
+  const msg =
+    `${errorFirstLine}\n` +
+    `\n` +
+    `--- CONTEXT ---\n` +
+    `httpStatus: ${lastAtt.status ?? 'no-status'}  nodeErrorCode: ${hintCode}\n` +
+    `invoiceBaseUrl: ${invoiceBaseUrl}\n` +
+    `timeoutMs: ${config.hellocash.timeoutMs}  retryIntervalMs: ${intervalMs}\n` +
+    `token (masked): ${maskToken(token)}\n` +
+    `syncHour: ${config.syncHour}  currentHour: ${hour}  ignoreSyncHour: ${ignoreHour}\n` +
+    `--- DIAGNOSTIC JSON ---\n` +
+    diagnosticJson;
+
+  const err = new Error(msg);
+  err.diagnostic = diagnostic;
+  err.attemptHistory = cashbookAttemptHistory;
+  throw err;
 }
 
 const rawEntries =
@@ -129,6 +573,7 @@ const invoiceNumbers = [
 const invoicesMap = new Map();
 
 for (const invNum of invoiceNumbers) {
+  let invRequestUrl = invoiceBaseUrl;
   try {
     const invOffset =
       $env.HELLOCASH_INVOICES_OFFSET !== undefined && $env.HELLOCASH_INVOICES_OFFSET !== null
@@ -153,13 +598,16 @@ for (const invNum of invoiceNumbers) {
       showDetails: String($env.HELLOCASH_INVOICES_SHOW_DETAILS || ''),
     });
 
-    const invResponse = await this.helpers.httpRequest({
-      method: 'GET',
-      url: `${invoiceBaseUrl}?${invQuery}`,
-      headers: authHeaders,
-      timeout: config.hellocash.timeoutMs,
-      json: true,
-    });
+    invRequestUrl = invQuery ? `${invoiceBaseUrl}?${invQuery}` : `${invoiceBaseUrl}`;
+    const invResponse = await this.helpers.httpRequest(
+      httpRequestOpts({
+        method: 'GET',
+        url: invRequestUrl,
+        headers: authHeaders,
+        timeout: config.hellocash.timeoutMs,
+        json: true,
+      }),
+    );
     const invList = invResponse?.invoices;
     if (Array.isArray(invList) && invList.length > 0) {
       const inv =
@@ -169,6 +617,19 @@ for (const invNum of invoiceNumbers) {
       }
     }
   } catch (e) {
+    const { status, bodyStr, hint, rawDump, causeChain } = extractHttpFailureDetails(e);
+    const failureExplanation = deriveFailureExplanation(status, hint, bodyStr);
+    console.error('HelloCash invoice fetch failed', {
+      invNum,
+      attempt: 'single',
+      httpStatus: status,
+      failureExplanation,
+      url: invRequestUrl,
+      responseBody: bodyStr,
+      hint: compactForDisplay(hint) ?? {},
+      rawDump,
+      causeChain,
+    });
     const msg = e instanceof Error ? e.message : String(e);
     console.warn(`HelloCash Fetch: failed to fetch invoice ${invNum}: ${msg}`);
   }

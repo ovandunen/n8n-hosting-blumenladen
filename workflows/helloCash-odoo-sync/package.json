@@ -1,0 +1,12 @@
+{
+  "name": "hellocash-odoo-sync-workflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "validate:workflow": "node scripts/validate-workflow.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

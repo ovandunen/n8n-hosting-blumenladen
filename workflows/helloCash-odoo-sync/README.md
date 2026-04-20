@@ -2,15 +2,45 @@
 
 This folder holds **source Code node bodies** (`src/*.js`), a **builder** (`build-workflow.mjs`), and the **generated** n8n import file (`helloCash-odoo-sync.workflow.json`). The workflow syncs **cashbook entries** from HelloCash Business into **Odoo `account.move`** journal entries.
 
+> **Do not run** `node helloCash-odoo-sync.workflow.json` (or any path to that file). Node will error with `ERR_IMPORT_ATTRIBUTE_MISSING`: the file is **JSON for n8n to import**, not a JavaScript program. To check the file, use **`npm run validate:workflow`** from this folder, or **`npm run hellocash:validate-workflow`** from the **repository root**.
+
 ## Build and import
 
 From the repository root:
 
 ```bash
 node workflows/helloCash-odoo-sync/build-workflow.mjs
+# optional: validate the generated JSON
+npm run hellocash:validate-workflow
 ```
 
-Import **`helloCash-odoo-sync.workflow.json`** into n8n (Workflow → Import from file). Attach **SMTP credentials** on **Send Error Email** and set all required environment variables (including on **task runners** if you use them).
+From **`workflows/helloCash-odoo-sync/`**:
+
+```bash
+npm run validate:workflow
+```
+
+Import **`helloCash-odoo-sync.workflow.json`** into n8n (Workflow → Import from file). Attach **SMTP credentials** on **Send Error Email** and set all required environment variables (including on **task runners** if you use them). **Running the workflow always happens inside n8n**, not with `node …workflow.json`.
+
+## Unit tests (one file per workflow node)
+
+From **`workflows/helloCash-odoo-sync/`**:
+
+```bash
+npm test
+```
+
+| Test file | Node under test |
+|-----------|-----------------|
+| `tests/config-loader.node.test.mjs` | Config Loader |
+| `tests/hellocash-fetch.node.test.mjs` | HelloCash Fetch |
+| `tests/map-to-odoo.node.test.mjs` | Map to Odoo |
+| `tests/odoo-post-moves.node.test.mjs` | Odoo Post Moves |
+| `tests/schedule-hourly.node.test.mjs` | Schedule Hourly (workflow JSON contract) |
+| `tests/when-clicking-test-workflow.node.test.mjs` | When clicking 'Test workflow' (workflow JSON contract) |
+| `tests/send-error-email.node.test.mjs` | Send Error Email (workflow JSON contract) |
+
+Code nodes are executed via `tests/harness.mjs` (`new Function` / `AsyncFunction`) with mocked `$env`, `$('Config Loader')`, `items`, and `this.helpers.httpRequest`. Trigger and email tests assert **`helloCash-odoo-sync.workflow.json`** shape (regenerate with `build-workflow.mjs` after workflow changes).
 
 ---
 

@@ -18,7 +18,7 @@ const workflow = {
   meta: {
     templateCredsSetupCompleted: false,
     description:
-      'HelloCash Business: two-phase GET cashBook + invoices → map to account.move → Odoo JSON-RPC. Triggers: Schedule Hourly OR When clicking Test workflow. Env: HELLOCASH_BASE_URL, HELLOCASH_API_TOKEN, ODOO_* incl. ODOO_PASSWORD (validated in Config, not in output json), TAX_ID_19 (19% USt) and TAX_ID_7, accounts, HELLOCASH_LIST_PATH default /api/v1/cashBook, optional HELLOCASH_QUERY_FROM/TO, HELLOCASH_IGNORE_SYNC_HOUR. SMTP on Send Error Email.',
+      'HelloCash Business: two-phase GET cashBook + invoices → map to account.move → Odoo JSON-RPC. Triggers: Schedule Hourly OR When clicking Test workflow. Env: HELLOCASH_BASE_URL, HELLOCASH_API_TOKEN, ODOO_* incl. ODOO_PASSWORD (validated in Config, not in output json), TAX_ID_19 (19% USt) and TAX_ID_7, accounts, HELLOCASH_LIST_PATH default /api/v1/cashBook, optional HELLOCASH_QUERY_FROM/TO, HELLOCASH_IGNORE_SYNC_HOUR. REQUIRED after import: n8n Credentials → create SMTP; open node Send Error Email → Credential for SMTP → select it (otherwise NodeOperationError: Node does not have any credentials set). Optional env ERROR_EMAIL_FROM for From address.',
   },
   settings: {
     executionOrder: 'v1',

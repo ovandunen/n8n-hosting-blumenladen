@@ -20,21 +20,66 @@ const rpc = async (model, method, args, kwargs = {}) => {
     params: {
       service: 'object',
       method: 'execute_kw',
-      args: [config.odoo.db, config.odoo.uid, pwd, model, method, args, kwargs],
+      args: [
+        config.odoo.db,
+        config.odoo.uid,
+        String(pwd).trim(),
+        model,
+        method,
+        args,
+        kwargs,
+      ],
     },
     id: Date.now(),
   };
-  const res = await this.helpers.httpRequest({
-    method: 'POST',
-    url,
-    body,
-    json: true,
-    timeout: 120000,
-    headers: { 'Content-Type': 'application/json' },
-  });
-  if (res.error) {
-    throw new Error(`Odoo RPC error: ${JSON.stringify(res.error)}`);
+
+  let res;
+  try {
+    res = await this.helpers.httpRequest({
+      method: 'POST',
+      url,
+      body,
+      json: true,
+      timeout: 120000,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (e) {
+    const status = e.response?.status ?? 'no-status';
+    const respBody = e.response?.data ?? e.response?.body ?? 'no body';
+    console.error('Odoo HTTP error', {
+      model,
+      method,
+      status,
+      responseBody: respBody,
+      message: e.message,
+    });
+    throw new Error(
+      `Odoo HTTP ${status} calling ${model}.${method}\n` +
+        `Response: ${JSON.stringify(respBody, null, 2)}`,
+    );
   }
+
+  if (res.error) {
+    console.error('Odoo RPC error', {
+      model,
+      method,
+      code: res.error.code,
+      message: res.error.data?.message ?? res.error.message,
+      debug: res.error.data?.debug ?? 'none',
+    });
+    throw new Error(
+      `Odoo RPC error calling ${model}.${method}\n` +
+        `Code: ${res.error.code}\n` +
+        `Message: ${res.error.data?.message ?? res.error.message}\n` +
+        `Debug: ${res.error.data?.debug ?? 'none'}`,
+    );
+  }
+
+  console.log(`Odoo RPC ok: ${model}.${method}`, {
+    resultType: Array.isArray(res.result) ? 'array' : typeof res.result,
+    resultLength: Array.isArray(res.result) ? res.result.length : undefined,
+  });
+
   return res.result;
 };
 
@@ -53,6 +98,8 @@ for (const item of items) {
 
   const { hellocashId, hellocashNumber, invoiceNumber, ref, odooVals, paymentMethod, taxRate } = j;
 
+  console.log(`Processing item ${ref}`, { hellocashId, ref });
+
   try {
     const existing = await rpc(
       'account.move',
@@ -60,7 +107,8 @@ for (const item of items) {
       [[['ref', '=', ref]]],
       { fields: ['id', 'state', 'name'], limit: 1 },
     );
-    if (existing?.length > 0) {
+    if (Array.isArray(existing) && existing.length > 0) {
+      console.log(`Skipping duplicate: ${ref}`, { odooMoveId: existing[0].id });
       results.push({
         json: {
           hellocashId,
@@ -88,6 +136,7 @@ for (const item of items) {
     try {
       const result = await rpc('account.move', 'create', [[odooVals]]);
       const moveId = Array.isArray(result) ? result[0] : result;
+      console.log(`Created Odoo move for ${ref}`, { odooMoveId: moveId });
       results.push({
         json: {
           hellocashId,
