@@ -19,6 +19,29 @@ const { entries, invoices } = hc;
 /** @type {Record<string, unknown>} */
 const invByNumber = invoices && typeof invoices === 'object' ? invoices : {};
 
+if (entries.length === 0) {
+  console.warn('Map to Odoo: HelloCash returned empty entries', {
+    rawType: typeof hc,
+    rawKeys: hc && typeof hc === 'object' ? Object.keys(hc) : [],
+    fetchedAt: hc.meta?.fetchedAt ?? input.fetchedAt ?? 'unknown',
+  });
+  return [
+    {
+      json: {
+        skipped: false,
+        mappedEmpty: true,
+        message: 'No rows to map from HelloCash payload',
+      },
+    },
+  ];
+}
+
+console.log('HelloCash payload received', {
+  entryCount: entries.length,
+  firstEntry: entries[0] ?? null,
+  fetchedAt: hc.meta?.fetchedAt ?? input.fetchedAt ?? 'unknown',
+});
+
 const out = [];
 
 for (const entry of entries) {
@@ -119,6 +142,15 @@ for (const entry of entries) {
     console.warn(`Map: unknown cashBook_type "${type}" for entry ${id}, skipping`);
     continue;
   }
+
+  console.log(`Mapped entry ${id}`, {
+    ref,
+    paymentMethod,
+    amount,
+    taxRate,
+    debitAccount: am.debit,
+    creditAccount: am.credit,
+  });
 
   out.push({
     json: {

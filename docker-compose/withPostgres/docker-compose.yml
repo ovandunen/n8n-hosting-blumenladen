@@ -47,9 +47,11 @@ services:
       - ODOO_PASSWORD=${ODOO_PASSWORD} 
       
       # helloCash Config
-      - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://api.hellocash.business/api/v1}
+      - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://api.hellocash.business}
       - HELLOCASH_API_TOKEN=${HELLOCASH_API_TOKEN}
       - HELLOCASH_IGNORE_SYNC_HOUR=true
+      - HELLOCASH_LIST_PATH=${HELLOCASH_LIST_PATH:-/api/v1/cashBook}
+      - HELLOCASH_INVOICES_PATH=${HELLOCASH_INVOICES_PATH:-/api/v1/invoices}
       
       # Odoo Connection
       - ODOO_BASE_URL=${ODOO_BASE_URL:-http://localhost:8069}
