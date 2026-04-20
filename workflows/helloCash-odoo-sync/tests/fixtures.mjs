@@ -1,3 +1,11 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** Built workflow JSON path (run \`npm run build\` first). */
+export const builtWorkflowPath = path.join(__dirname, '..', 'build', 'helloCash-odoo-sync_workflow.json');
+
 /** Minimal valid $env for Config Loader */
 export const validConfigEnv = {
   HELLOCASH_BASE_URL: 'https://api.hellocash.business',

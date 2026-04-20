@@ -1,0 +1,6 @@
+# Generated n8n import bundle (source: src/workflow-template.json + src/nodes/*.js)
+build/
+
+# Local secrets (use env/.env.example as a template)
+env/.env.local
+env/.env.local.*
