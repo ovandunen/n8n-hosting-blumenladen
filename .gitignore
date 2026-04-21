@@ -1,6 +1,6 @@
 docker-compose/withPostgres/.env
 .cursor/
-DS_STORE
+.env.bak
 .DS_STORE
 docker-compose/withPostgres/.env.bak
 credentials
