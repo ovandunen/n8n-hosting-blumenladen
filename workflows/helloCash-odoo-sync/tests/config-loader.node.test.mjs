@@ -32,3 +32,8 @@ test('Config Loader: strips trailing /jsonrpc from ODOO_BASE_URL', () => {
   const out = runSyncCodeNode('01-config-loader.js', { $env: env });
   assert.equal(out[0].json.odoo.baseUrl, 'http://host.docker.internal:8069');
 });
+
+test('Config Loader: rejects ODOO_BASE_URL that is only a port (would become 8069/jsonrpc)', () => {
+  const env = { ...validConfigEnv, ODOO_BASE_URL: '8069' };
+  assert.throws(() => runSyncCodeNode('01-config-loader.js', { $env: env }), /ODOO_BASE_URL must be a full URL/);
+});

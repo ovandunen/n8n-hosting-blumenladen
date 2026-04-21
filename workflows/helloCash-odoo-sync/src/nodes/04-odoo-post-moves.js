@@ -113,7 +113,7 @@ const rpc = async (model, method, args, kwargs = {}) => {
     const nodeCode =
       e && typeof e === 'object' && 'code' in e ? String(/** @type {{ code?: unknown }} */ (e).code ?? '') : '';
     const errMsg = e instanceof Error ? e.message : String(e);
-    console.error('Odoo HTTP error', {
+    console.error(`Odoo HTTP error — ODOO_URL=${url} (${model}.${method})`, {
       model,
       method,
       url,
@@ -126,9 +126,9 @@ const rpc = async (model, method, args, kwargs = {}) => {
       status !== 'no-status'
         ? `HTTP ${status}`
         : `HTTP status unknown${nodeCode ? ` (node code ${nodeCode})` : ''} — check ODOO_BASE_URL, TLS, proxy, and that Odoo is reachable`;
+    // Lead with ODOO_URL: n8n often surfaces only the first line of error.message in JSON output.
     throw new Error(
-      `${statusLine} calling ${model}.${method}\n` +
-        `URL: ${url}\n` +
+      `ODOO_URL=${url} | ${statusLine} calling ${model}.${method}\n` +
         `Message: ${errMsg}\n` +
         `Response: ${typeof respBody === 'string' ? respBody : JSON.stringify(respBody)}`,
     );
