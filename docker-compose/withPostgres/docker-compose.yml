@@ -19,6 +19,9 @@ services:
   n8n:
     image: n8nio/n8n:latest
     restart: unless-stopped
+    # Odoo on the Docker host: use host.docker.internal (see extra_hosts). Do not use localhost — inside this container that is not your host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:5679:5678"
     environment:
@@ -42,7 +45,6 @@ services:
       - GENERIC_TIMEZONE=${TZ:-UTC}
       - TZ=${TZ:-UTC}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
-      - N8N_RUNNERS_ENABLED=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - ODOO_PASSWORD=${ODOO_PASSWORD} 
       
@@ -53,8 +55,8 @@ services:
       - HELLOCASH_LIST_PATH=${HELLOCASH_LIST_PATH:-/api/v1/cashBook}
       - HELLOCASH_INVOICES_PATH=${HELLOCASH_INVOICES_PATH:-/api/v1/invoices}
       
-      # Odoo Connection
-      - ODOO_BASE_URL=${ODOO_BASE_URL:-http://localhost:8069}
+      # Odoo: origin only (no /jsonrpc) — workflow appends /jsonrpc. From container, reach host Odoo via host.docker.internal.
+      - ODOO_BASE_URL=${ODOO_BASE_URL:-http://host.docker.internal:8069}
       - ODOO_DB=${ODOO_DB:-blumenladen}
       - ODOO_UID=${ODOO_UID:-6}
       

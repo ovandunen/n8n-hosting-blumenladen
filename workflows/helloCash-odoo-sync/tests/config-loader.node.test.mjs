@@ -26,3 +26,9 @@ test('Config Loader: throws when a required env var is missing', () => {
   delete bad.HELLOCASH_BASE_URL;
   assert.throws(() => runSyncCodeNode('01-config-loader.js', { $env: bad }), /HELLOCASH_BASE_URL/);
 });
+
+test('Config Loader: strips trailing /jsonrpc from ODOO_BASE_URL', () => {
+  const env = { ...validConfigEnv, ODOO_BASE_URL: 'http://host.docker.internal:8069/jsonrpc' };
+  const out = runSyncCodeNode('01-config-loader.js', { $env: env });
+  assert.equal(out[0].json.odoo.baseUrl, 'http://host.docker.internal:8069');
+});

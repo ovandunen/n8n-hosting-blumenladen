@@ -58,7 +58,11 @@ const config = {
 
   /** Odoo JSON-RPC target (password stays in $env.ODOO_PASSWORD only). */
   odoo: {
-    baseUrl: String($env.ODOO_BASE_URL).trim().replace(/\/+$/, ''),
+    baseUrl: (() => {
+      let u = String($env.ODOO_BASE_URL).trim().replace(/\/+$/, '');
+      if (u.endsWith('/jsonrpc')) u = u.replace(/\/jsonrpc$/, '');
+      return u;
+    })(),
     db: String($env.ODOO_DB).trim(),
     uid: parseIntEnv('ODOO_UID', $env.ODOO_UID),
     journalId: parseIntEnv('ODOO_JOURNAL_ID', $env.ODOO_JOURNAL_ID),
