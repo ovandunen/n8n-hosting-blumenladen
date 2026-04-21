@@ -1,2 +1,5 @@
 docker-compose/withPostgres/.env
 .cursor/
+.DS_Store
+credentials
+.env.bak
