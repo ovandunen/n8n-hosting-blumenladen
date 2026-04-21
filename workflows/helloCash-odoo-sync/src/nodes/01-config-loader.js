@@ -31,6 +31,16 @@ for (const name of REQUIRED) {
   }
 }
 
+const odooBaseRaw = String($env.ODOO_BASE_URL).trim();
+const odooBaseForSchemeCheck = odooBaseRaw.replace(/\/jsonrpc\/?$/i, '').replace(/\/+$/, '');
+if (!/^https?:\/\//i.test(odooBaseForSchemeCheck)) {
+  throw new Error(
+    `Config Loader: ODOO_BASE_URL must be a full URL starting with http:// or https:// (current value: ${JSON.stringify(odooBaseRaw)}). ` +
+      'A port alone (e.g. 8069) is invalid. Example when n8n runs in Docker and Odoo is on the host: http://host.docker.internal:8069. ' +
+      'If you use docker-compose, set ODOO_BASE_URL in a .env file next to docker-compose.yml (or pass --env-file), not only a bare port.',
+  );
+}
+
 /** @param {string} envName @param {string | number} raw */
 function parseIntEnv(envName, raw) {
   const n = parseInt(String(raw).trim(), 10);
@@ -58,7 +68,11 @@ const config = {
 
   /** Odoo JSON-RPC target (password stays in $env.ODOO_PASSWORD only). */
   odoo: {
-    baseUrl: String($env.ODOO_BASE_URL).trim().replace(/\/+$/, ''),
+    baseUrl: (() => {
+      let u = String($env.ODOO_BASE_URL).trim().replace(/\/+$/, '');
+      if (u.endsWith('/jsonrpc')) u = u.replace(/\/jsonrpc$/, '');
+      return u;
+    })(),
     db: String($env.ODOO_DB).trim(),
     uid: parseIntEnv('ODOO_UID', $env.ODOO_UID),
     journalId: parseIntEnv('ODOO_JOURNAL_ID', $env.ODOO_JOURNAL_ID),

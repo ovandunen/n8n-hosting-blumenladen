@@ -3,6 +3,70 @@
  * Uses $env.ODOO_PASSWORD (validated at Config Loader, never stored in config json).
  */
 
+/**
+ * Best-effort HTTP status from n8n httpRequest (same pattern as HelloCash fetch).
+ * @param {unknown} e
+ */
+function resolveHttpStatus(e) {
+  /** @param {unknown} x */
+  const asStatus = (x) => {
+    if (x === undefined || x === null || x === '') return undefined;
+    if (typeof x === 'number' && Number.isFinite(x)) return x;
+    const n = parseInt(String(x), 10);
+    if (Number.isFinite(n)) return n;
+    if (typeof x === 'string') return x.trim() || undefined;
+    return undefined;
+  };
+
+  let cur = e;
+  for (let d = 0; d < 6 && cur != null; d++) {
+    if (typeof cur !== 'object') break;
+    const o = /** @type {Record<string, unknown>} */ (cur);
+    const u =
+      asStatus(o.response?.status) ??
+      asStatus(o.response?.statusCode) ??
+      asStatus(
+        o.error && typeof o.error === 'object'
+          ? /** @type {{ status?: unknown, statusCode?: unknown }} */ (o.error).status ??
+              /** @type {{ status?: unknown, statusCode?: unknown }} */ (o.error).statusCode ??
+              undefined
+          : undefined,
+      ) ??
+      asStatus(o.httpCode) ??
+      asStatus(o.statusCode) ??
+      asStatus(o.status);
+    if (u !== undefined) return u;
+    cur = o.cause;
+  }
+
+  const msg = String(
+    (typeof e === 'object' && e && 'message' in e && /** @type {{ message: unknown }} */ (e).message) || '',
+  );
+  const m =
+    msg.match(/\bstatus code\s+(\d{3})\b/i) ??
+    msg.match(/\bHTTP\s+(\d{3})\b/) ??
+    msg.match(/^\s*(\d{3})\s/);
+  if (m) return parseInt(m[1], 10);
+
+  return 'no-status';
+}
+
+/** @param {unknown} e */
+function odooHttpErrorBody(e) {
+  let body =
+    /** @type {{ response?: { data?: unknown, body?: unknown } }} */ (e)?.response?.data ??
+    /** @type {{ response?: { data?: unknown, body?: unknown } }} */ (e)?.response?.body ??
+    null;
+  if ((body === undefined || body === null || body === '') && e && typeof e === 'object' && 'cause' in e) {
+    const c = /** @type {{ cause?: { response?: { data?: unknown, body?: unknown } } }} */ (e).cause;
+    body = c?.response?.data ?? c?.response?.body ?? null;
+  }
+  if (body === undefined || body === null || body === '') {
+    return 'no body';
+  }
+  return typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+}
+
 const config = $('Config Loader').first().json;
 const pwd = $env.ODOO_PASSWORD?.trim();
 if (!pwd) {
@@ -44,18 +108,29 @@ const rpc = async (model, method, args, kwargs = {}) => {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (e) {
-    const status = e.response?.status ?? 'no-status';
-    const respBody = e.response?.data ?? e.response?.body ?? 'no body';
-    console.error('Odoo HTTP error', {
+    const status = resolveHttpStatus(e);
+    const respBody = odooHttpErrorBody(e);
+    const nodeCode =
+      e && typeof e === 'object' && 'code' in e ? String(/** @type {{ code?: unknown }} */ (e).code ?? '') : '';
+    const errMsg = e instanceof Error ? e.message : String(e);
+    console.error(`Odoo HTTP error — ODOO_URL=${url} (${model}.${method})`, {
       model,
       method,
-      status,
+      url,
+      httpStatus: status,
+      nodeErrorCode: nodeCode || undefined,
       responseBody: respBody,
-      message: e.message,
+      message: errMsg,
     });
+    const statusLine =
+      status !== 'no-status'
+        ? `HTTP ${status}`
+        : `HTTP status unknown${nodeCode ? ` (node code ${nodeCode})` : ''} — check ODOO_BASE_URL, TLS, proxy, and that Odoo is reachable`;
+    // Lead with ODOO_URL: n8n often surfaces only the first line of error.message in JSON output.
     throw new Error(
-      `Odoo HTTP ${status} calling ${model}.${method}\n` +
-        `Response: ${JSON.stringify(respBody, null, 2)}`,
+      `ODOO_URL=${url} | ${statusLine} calling ${model}.${method}\n` +
+        `Message: ${errMsg}\n` +
+        `Response: ${typeof respBody === 'string' ? respBody : JSON.stringify(respBody)}`,
     );
   }
 
