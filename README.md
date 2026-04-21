@@ -30,4 +30,5 @@ See [`kubernetes/`](./kubernetes/) for raw Kubernetes manifest examples used in 
 - [n8n docs](https://docs.n8n.io/)
 - [Self-hosting guides](https://docs.n8n.io/hosting/)
 - [Community forum](https://community.n8n.io/)
->>>>>>> 96068bf (feat(chart): add official n8n Helm chart (#68))
+
+creates a connection between Odoo and HelloCash

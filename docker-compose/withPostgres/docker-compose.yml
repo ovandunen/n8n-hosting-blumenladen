@@ -19,8 +19,11 @@ services:
   n8n:
     image: n8nio/n8n:latest
     restart: unless-stopped
+    # Odoo on the Docker host: use host.docker.internal (see extra_hosts). Do not use localhost — inside this container that is not your host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:5679:5678"
+      - "127.0.0.1:5678:5678"
     environment:
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
@@ -35,14 +38,16 @@ services:
       - N8N_SMTP_USER=i${SMTP_USER:-yobantu@gmx.net}
       - N8N_SMTP_PASS=${SMTP_PASSWORD}    # ← reads from .env
       - N8N_SMTP_SENDER=${SMTP_SENDER:-yobantu@gmx.net}
+      # secures only access to webhooks
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
       - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-changeme}
+      - N8N_USER_MANAGEMENT_MAIN_USER_EMAIL=${N8N_USER:-ovandune@gmail.com} 
+      - N8N_USER_MANAGEMENT_MAIN_USER_PASSWORD=${N8N_PASSWORD:-changeme}
       - N8N_ENCRYPTION_KEY=db063d86-7722-4ccc-bc89-4851035ba990
       - GENERIC_TIMEZONE=${TZ:-UTC}
       - TZ=${TZ:-UTC}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
-      - N8N_RUNNERS_ENABLED=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - ODOO_PASSWORD=${ODOO_PASSWORD} 
       
@@ -53,8 +58,8 @@ services:
       - HELLOCASH_LIST_PATH=${HELLOCASH_LIST_PATH:-/api/v1/cashBook}
       - HELLOCASH_INVOICES_PATH=${HELLOCASH_INVOICES_PATH:-/api/v1/invoices}
       
-      # Odoo Connection
-      - ODOO_BASE_URL=${ODOO_BASE_URL:-http://localhost:8069}
+      # Odoo: origin only (no /jsonrpc) — workflow appends /jsonrpc. From container, reach host Odoo via host.docker.internal.
+      - ODOO_BASE_URL=${ODOO_BASE_URL:-http://host.docker.internal:8069}
       - ODOO_DB=${ODOO_DB:-blumenladen}
       - ODOO_UID=${ODOO_UID:-6}
       
@@ -67,8 +72,8 @@ services:
       - ACCOUNT_UST_7=${ACCOUNT_UST_7:-20}
       
       # Tax IDs (from account_tax)
-      - TAX_ID_19=${TAX_ID_19:-54}
-      - TAX_ID_7=${TAX_ID_7:-26}
+      - TAX_ID_19=${TAX_ID_19:-}
+      - TAX_ID_7=${TAX_ID_7:-}
       
       # Journal ID (from account_journal)
       - ODOO_JOURNAL_ID=${ODOO_JOURNAL_ID:-15}

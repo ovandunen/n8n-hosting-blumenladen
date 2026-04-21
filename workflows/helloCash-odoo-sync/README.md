@@ -74,6 +74,12 @@ Code nodes run via `tests/harness.mjs` with mocked `$env`, `$('Config Loader')`,
 
 ---
 
+scripts/
+├── build.js          ← injects src/nodes/* into workflow template
+├── deploy.sh         ← pushes build/ to n8n via API
+├── export.sh         ← pulls from n8n, extracts code back to src/nodes/
+└── sanitize-workflow.js   ← strips credential IDs and instance-specific fields
+
 ## Still to implement or verify
 
 | Item | Why |
