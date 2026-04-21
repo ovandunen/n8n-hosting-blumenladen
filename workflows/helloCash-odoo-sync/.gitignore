@@ -4,3 +4,4 @@ build/
 # Local secrets (use env/.env.example as a template)
 env/.env.local
 env/.env.local.*
+env/env.local
