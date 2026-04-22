@@ -32,3 +32,24 @@ See [`kubernetes/`](./kubernetes/) for raw Kubernetes manifest examples used in 
 - [Community forum](https://community.n8n.io/)
 
 creates a connection between Odoo and HelloCash
+
+## Deployment
+
+# 1. On your computer — build the workflow
+cd workflows/helloCash-odoo-sync
+npm run build
+
+# 2. Push infrastructure changes to git
+cd ../../
+git push origin main
+
+# 3. On the remote server — pull and restart
+ssh user@server
+cd n8n-hosting/docker-compose/withPostgres
+git pull origin main
+docker compose up -d
+
+# 4. Back on your Mac — deploy workflow via API
+set -a && source env/.env.local && set +a
+cd workflows/helloCash-odoo-sync
+npm run deploy
