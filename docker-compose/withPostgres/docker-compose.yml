@@ -1,15 +1,15 @@
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=n8n
-      - POSTGRES_PASSWORD=n8n_password
-      - POSTGRES_DB=n8n
+      - POSTGRES_USER=${POSTGRES_USER:-n8n}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your .env file}
+      - POSTGRES_DB=${POSTGRES_DB:-n8n}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data/pgdata
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U n8n"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-n8n}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -28,60 +28,72 @@ services:
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
       - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=n8n
-      - DB_POSTGRESDB_USER=n8n
-      - DB_POSTGRESDB_PASSWORD=n8n_password
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-n8n}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-n8n}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your .env file}
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_TELEMETRY_DISABLED=true
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
       - N8N_EMAIL_MODE=smtp
-      - N8N_SMTP_HOST=${SMTP_HOST:-mail.gmx.com}
-      - N8N_SMTP_PORT=587
-      - N8N_SMTP_SSL=false
-      - N8N_SMTP_USER=i${SMTP_USER:-yobantu@gmx.net}
-      - N8N_SMTP_PASS=${SMTP_PASSWORD}    # ← reads from .env
-      - N8N_SMTP_SENDER=${SMTP_SENDER:-yobantu@gmx.net}
+      - N8N_SMTP_HOST=${SMTP_HOST:?Set SMTP_HOST in your .env file}
+      - N8N_SMTP_PORT=${N8N_SMTP_PORT:-587}
+      - N8N_SMTP_SSL=${N8N_SMTP_SSL:-false}
+      - N8N_SMTP_USER=${SMTP_USER:?Set SMTP_USER in your .env file}
+      - N8N_SMTP_PASS=${SMTP_PASSWORD:?Set SMTP_PASSWORD in your .env file}
+      - N8N_SMTP_SENDER=${SMTP_SENDER:?Set SMTP_SENDER in your .env file}
       # secures only access to webhooks
       - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-changeme}
-      - N8N_USER_MANAGEMENT_MAIN_USER_EMAIL=${N8N_USER:-ovandune@gmail.com} 
-      - N8N_USER_MANAGEMENT_MAIN_USER_PASSWORD=${N8N_PASSWORD:-changeme}
-      - N8N_ENCRYPTION_KEY=db063d86-7722-4ccc-bc89-4851035ba990
+      - N8N_BASIC_AUTH_USER=${N8N_USER:?Set N8N_USER in your .env file}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:?Set N8N_PASSWORD in your .env file}
+      - N8N_USER_MANAGEMENT_MAIN_USER_EMAIL=${N8N_USER:?Set N8N_USER in your .env file}
+      - N8N_USER_MANAGEMENT_MAIN_USER_PASSWORD=${N8N_PASSWORD:?Set N8N_PASSWORD in your .env file}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in your .env file}
       - GENERIC_TIMEZONE=${TZ:-UTC}
       - TZ=${TZ:-UTC}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
-      - ODOO_PASSWORD=${ODOO_PASSWORD} 
-      
+      - ODOO_PASSWORD=${ODOO_PASSWORD:?Set ODOO_PASSWORD in your .env file}
+
       # helloCash Config
       - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://api.hellocash.business}
-      - HELLOCASH_API_TOKEN=${HELLOCASH_API_TOKEN}
-      - HELLOCASH_IGNORE_SYNC_HOUR=true
+      - HELLOCASH_API_TOKEN=${HELLOCASH_API_TOKEN:?Set HELLOCASH_API_TOKEN in your .env file}
+      - HELLOCASH_IGNORE_SYNC_HOUR=${HELLOCASH_IGNORE_SYNC_HOUR:-false}
       - HELLOCASH_LIST_PATH=${HELLOCASH_LIST_PATH:-/api/v1/cashBook}
       - HELLOCASH_INVOICES_PATH=${HELLOCASH_INVOICES_PATH:-/api/v1/invoices}
-      
+
       # Odoo: origin only (no /jsonrpc) — workflow appends /jsonrpc. From container, reach host Odoo via host.docker.internal.
-      - ODOO_BASE_URL=${ODOO_BASE_URL:-http://host.docker.internal:8069}
-      - ODOO_DB=${ODOO_DB:-blumenladen}
-      - ODOO_UID=${ODOO_UID:-6}
-      
+      - ODOO_BASE_URL=${ODOO_BASE_URL:?Set ODOO_BASE_URL in your .env file}
+      - ODOO_DB=${ODOO_DB:?Set ODOO_DB in your .env file}
+      - ODOO_UID=${ODOO_UID:?Set ODOO_UID in your .env file}
+
       # Account IDs (from account_group)
-      - ACCOUNT_KASSE=${ACCOUNT_KASSE:-15}
-      - ACCOUNT_BANK=${ACCOUNT_BANK:-16}
-      - ACCOUNT_ERLOESE=${ACCOUNT_ERLOESE:-22}
-      - ACCOUNT_GUTSCHEIN=${ACCOUNT_GUTSCHEIN:-21}
-      - ACCOUNT_UST_19=${ACCOUNT_UST_19:-19}
-      - ACCOUNT_UST_7=${ACCOUNT_UST_7:-20}
-      
+      - ACCOUNT_KASSE=${ACCOUNT_KASSE:?Set ACCOUNT_KASSE in your .env file}
+      - ACCOUNT_BANK=${ACCOUNT_BANK:?Set ACCOUNT_BANK in your .env file}
+      - ACCOUNT_ERLOESE=${ACCOUNT_ERLOESE:?Set ACCOUNT_ERLOESE in your .env file}
+      - ACCOUNT_GUTSCHEIN=${ACCOUNT_GUTSCHEIN:?Set ACCOUNT_GUTSCHEIN in your .env file}
+      - ACCOUNT_UST_19=${ACCOUNT_UST_19:?Set ACCOUNT_UST_19 in your .env file}
+      - ACCOUNT_UST_7=${ACCOUNT_UST_7:?Set ACCOUNT_UST_7 in your .env file}
+
       # Tax IDs (from account_tax)
-      - TAX_ID_19=${TAX_ID_19:-}
-      - TAX_ID_7=${TAX_ID_7:-}
-      
+      - TAX_ID_19=${TAX_ID_19:?Set TAX_ID_19 in your .env file}
+      - TAX_ID_7=${TAX_ID_7:?Set TAX_ID_7 in your .env file}
+
       # Journal ID (from account_journal)
-      - ODOO_JOURNAL_ID=${ODOO_JOURNAL_ID:-15}
-      
+      - ODOO_JOURNAL_ID=${ODOO_JOURNAL_ID:?Set ODOO_JOURNAL_ID in your .env file}
+
       # Sync Settings
       - SYNC_HOUR=${SYNC_HOUR:-22}
-      - ERROR_EMAIL=${ERROR_EMAIL:-ovd@maola.tech}
-      
+      - ERROR_EMAIL=${ERROR_EMAIL:?Set ERROR_EMAIL in your .env file}
+      - N8N_API_ENABLED=${N8N_API_ENABLED}
+      - N8N_API_KEY=${N8N_API_KEY}
+      - N8N_PASSWORD=${N8N_PASSWORD}
+      - N8N_PUBLIC_API_DISABLED=${N8N_PUBLIC_API_DISABLED}
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE}
+      - N8N_USER=${N8N_USER}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_USER=${SMTP_USER}
+
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:

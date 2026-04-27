@@ -1,10 +1,5 @@
 {
-  "updatedAt": "2026-04-21T10:19:08.974Z",
-  "createdAt": "2026-04-10T12:14:59.541Z",
   "name": "HelloCash Business → Odoo sync",
-  "description": null,
-  "active": false,
-  "isArchived": false,
   "nodes": [
     {
       "parameters": {
@@ -155,34 +150,7 @@
     }
   },
   "settings": {
-    "executionOrder": "v1",
-    "binaryMode": "separate"
+    "executionOrder": "v1"
   },
-  "staticData": null,
-  "pinData": {},
-  "versionId": "106f97f8-3c7f-4ae7-abf5-e2ec571f6e2b",
-  "activeVersionId": null,
-  "versionCounter": 108,
-  "triggerCount": 0,
-  "shared": [
-    {
-      "updatedAt": "2026-04-10T12:14:59.541Z",
-      "createdAt": "2026-04-10T12:14:59.541Z",
-      "role": "workflow:owner",
-      "workflowId": "C0hEQ0T4PuhsyJr5",
-      "projectId": "uHz4ALeNtYTdUlVV",
-      "project": {
-        "updatedAt": "2026-04-12T15:56:23.154Z",
-        "createdAt": "2026-04-09T20:49:09.976Z",
-        "id": "uHz4ALeNtYTdUlVV",
-        "name": "Ola van Dunen <vandunen@envisioning.solutions>",
-        "type": "personal",
-        "icon": null,
-        "description": null,
-        "creatorId": "d69ae0ab-1ebd-4ecc-a0b7-dfe7bf0bc961"
-      }
-    }
-  ],
-  "tags": [],
-  "activeVersion": null
+  "staticData": null
 }

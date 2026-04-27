@@ -6,7 +6,8 @@
     "build": "node scripts/build.mjs",
     "pretest": "npm run build",
     "test": "node --test tests/*.test.mjs",
-    "validate:workflow": "node scripts/validate-workflow.mjs"
+    "validate:workflow": "node scripts/validate-workflow.mjs",
+    "deploy": "sh scripts/deploy.sh"
   },
   "engines": {
     "node": ">=18"
