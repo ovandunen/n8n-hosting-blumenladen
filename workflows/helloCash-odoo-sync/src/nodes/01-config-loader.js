@@ -4,6 +4,8 @@
  * ODOO_PASSWORD is required here but never included in output json.
  */
 
+const NODE = 'Config Loader';
+
 const REQUIRED = [
   'HELLOCASH_BASE_URL',
   'ODOO_BASE_URL',
@@ -25,17 +27,52 @@ for (const name of REQUIRED) {
   const val = $env[name];
   if (val === undefined || val === null || String(val).trim() === '') {
     throw new Error(
-      `Config Loader: required environment variable is missing or empty: ${name}. ` +
+      `${NODE}: required environment variable is missing or empty: ${name}. ` +
         'Set it in n8n (Settings → Variables / environment) and ensure this execution can read it.',
     );
   }
 }
 
+/** @param {string} label @param {string} urlRaw */
+function validateBaseUrl(label, urlRaw) {
+  const raw = String(urlRaw ?? '').trim();
+  const normalized = raw.replace(/\/+$/, '');
+
+  // Reject bare ports like "8069" or "3000".
+  if (/^\d{2,5}$/.test(normalized)) {
+    throw new Error(
+      `${NODE}: ${label} must be a full URL, not just a port (got ${JSON.stringify(raw)}). ` +
+        `Example: https://api.hellocash.com or http://host.docker.internal:8069`,
+    );
+  }
+
+  const forSchemeCheck = normalized.replace(/\/jsonrpc\/?$/i, '');
+  if (!/^https?:\/\//i.test(forSchemeCheck) && !forSchemeCheck.startsWith('//')) {
+    throw new Error(
+      `${NODE}: ${label} must start with http:// or https:// (current value: ${JSON.stringify(raw)}). ` +
+        `Example (Docker → host): http://host.docker.internal:8069`,
+    );
+  }
+
+  // n8n Code nodes run in a sandbox where global URL may be undefined.
+  // Validate with a conservative regex instead of relying on URL parsing.
+  const candidate = forSchemeCheck.startsWith('//') ? `https:${forSchemeCheck}` : forSchemeCheck;
+  const m = candidate.match(/^https?:\/\/([^\/?#]+)(\/|$)/i);
+  const host = m ? m[1] : '';
+  if (!host) {
+    throw new Error(`${NODE}: ${label} is not a valid URL (got ${JSON.stringify(raw)}). Missing hostname.`);
+  }
+
+  return normalized;
+}
+
+validateBaseUrl('HELLOCASH_BASE_URL', String($env.HELLOCASH_BASE_URL));
+
 const odooBaseRaw = String($env.ODOO_BASE_URL).trim();
 const odooBaseForSchemeCheck = odooBaseRaw.replace(/\/jsonrpc\/?$/i, '').replace(/\/+$/, '');
 if (!/^https?:\/\//i.test(odooBaseForSchemeCheck)) {
   throw new Error(
-    `Config Loader: ODOO_BASE_URL must be a full URL starting with http:// or https:// (current value: ${JSON.stringify(odooBaseRaw)}). ` +
+    `${NODE}: ODOO_BASE_URL must be a full URL starting with http:// or https:// (current value: ${JSON.stringify(odooBaseRaw)}). ` +
       'A port alone (e.g. 8069) is invalid. Example when n8n runs in Docker and Odoo is on the host: http://host.docker.internal:8069. ' +
       'If you use docker-compose, set ODOO_BASE_URL in a .env file next to docker-compose.yml (or pass --env-file), not only a bare port.',
   );
@@ -45,7 +82,10 @@ if (!/^https?:\/\//i.test(odooBaseForSchemeCheck)) {
 function parseIntEnv(envName, raw) {
   const n = parseInt(String(raw).trim(), 10);
   if (!Number.isFinite(n)) {
-    throw new Error(`Config Loader: ${envName} must be a finite integer, got: ${JSON.stringify(raw)}`);
+    throw new Error(
+      `${NODE}: ${envName} must be a finite integer, got: ${JSON.stringify(raw)}. ` +
+        `Example: ${envName}="123"`,
+    );
   }
   return n;
 }

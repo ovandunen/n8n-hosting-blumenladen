@@ -35,12 +35,12 @@ services:
       - N8N_TELEMETRY_DISABLED=true
       - N8N_VERSION_NOTIFICATIONS_ENABLED=false
       - N8N_EMAIL_MODE=smtp
-      - N8N_SMTP_HOST=${SMTP_HOST:?Set SMTP_HOST in your .env file}
-      - N8N_SMTP_PORT=${N8N_SMTP_PORT:-587}
-      - N8N_SMTP_SSL=${N8N_SMTP_SSL:-false}
-      - N8N_SMTP_USER=${SMTP_USER:?Set SMTP_USER in your .env file}
-      - N8N_SMTP_PASS=${SMTP_PASSWORD:?Set SMTP_PASSWORD in your .env file}
-      - N8N_SMTP_SENDER=${SMTP_SENDER:?Set SMTP_SENDER in your .env file}
+      - N8N_SMTP_HOST=${N8N_SMTP_HOST:?Set N8N_SMTP_HOST in your .env file}
+      - N8N_SMTP_PORT=${N8N_SMTP_PORT:?Set N8N_SMTP_PORT in your .env file}
+      - N8N_SMTP_SSL=${N8N_SMTP_SSL:?Set N8N_SMTP_SSL in your .env file}
+      - N8N_SMTP_USER=${N8N_SMTP_USER:?Set N8N_SMTP_USER in your .env file}
+      - N8N_SMTP_PASS=${N8N_SMTP_PASS:?Set N8N_SMTP_PASS in your .env file}
+      - N8N_SMTP_SENDER=${N8N_SMTP_SENDER:?Set N8N_SMTP_SENDER in your .env file}
       # secures only access to webhooks
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=${N8N_USER:?Set N8N_USER in your .env file}
@@ -84,15 +84,7 @@ services:
       # Sync Settings
       - SYNC_HOUR=${SYNC_HOUR:-22}
       - ERROR_EMAIL=${ERROR_EMAIL:?Set ERROR_EMAIL in your .env file}
-      - N8N_API_ENABLED=${N8N_API_ENABLED}
-      - N8N_API_KEY=${N8N_API_KEY}
-      - N8N_PASSWORD=${N8N_PASSWORD}
-      - N8N_PUBLIC_API_DISABLED=${N8N_PUBLIC_API_DISABLED}
-      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE}
-      - N8N_USER=${N8N_USER}
-      - SMTP_HOST=${SMTP_HOST}
-      - SMTP_PASSWORD=${SMTP_PASSWORD}
-      - SMTP_USER=${SMTP_USER}
+      - ERROR_EMAIL_FROM=${ERROR_EMAIL_FROM}
 
     volumes:
       - n8n_data:/home/node/.n8n
