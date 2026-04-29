@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * Option B build: inject src/nodes/*.js into src/workflow-template.json → build/helloCash-odoo-sync_workflow.json
+ * Output is whitelisted for n8n public API POST /api/v1/workflows (no extra top-level or settings keys).
  * Usage (from this package): npm run build
  */
 import fs from 'node:fs';
@@ -9,6 +10,62 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
+
+/** Top-level keys allowed on create/update via n8n public API */
+const OUTPUT_TOP_LEVEL_KEYS = ['name', 'nodes', 'connections', 'settings', 'staticData'];
+
+/** settings.* keys accepted by the public API */
+const ALLOWED_SETTINGS_KEYS = new Set([
+  'executionOrder',
+  'saveManualExecutions',
+  'callerPolicy',
+  'errorWorkflow',
+  'timezone',
+]);
+
+/** @param {unknown} settings */
+function pickAllowedSettings(settings) {
+  if (settings == null || typeof settings !== 'object' || Array.isArray(settings)) {
+    return {};
+  }
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  const o = /** @type {Record<string, unknown>} */ (settings);
+  for (const key of ALLOWED_SETTINGS_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(o, key)) {
+      out[key] = o[key];
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {Record<string, unknown>} template
+ * @returns {Record<string, unknown>}
+ */
+function assembleApiWorkflow(template) {
+  const name = template.name;
+  if (typeof name !== 'string' || name.trim() === '') {
+    console.error('build: template.name must be a non-empty string');
+    process.exit(1);
+  }
+  if (!Array.isArray(template.nodes)) {
+    console.error('build: template.nodes must be an array');
+    process.exit(1);
+  }
+  if (template.connections == null || typeof template.connections !== 'object' || Array.isArray(template.connections)) {
+    console.error('build: template.connections must be a non-null object');
+    process.exit(1);
+  }
+
+  return {
+    name,
+    nodes: template.nodes,
+    connections: template.connections,
+    settings: pickAllowedSettings(template.settings),
+    staticData: template.staticData !== undefined ? template.staticData : null,
+  };
+}
 
 /** @type {Record<string, string>} node display name → path under root */
 const CODE_MAP = {
@@ -22,9 +79,17 @@ const templatePath = path.join(root, 'src', 'workflow-template.json');
 const outDir = path.join(root, 'build');
 const outPath = path.join(outDir, 'helloCash-odoo-sync_workflow.json');
 
-const template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+const template = /** @type {Record<string, unknown>} */ (JSON.parse(fs.readFileSync(templatePath, 'utf8')));
 if (!Array.isArray(template.nodes)) {
   console.error('Invalid template: missing nodes[]');
+  process.exit(1);
+}
+
+const unknownTop = Object.keys(template).filter((k) => !OUTPUT_TOP_LEVEL_KEYS.includes(k));
+if (unknownTop.length > 0) {
+  console.error(
+    `build: workflow-template.json has keys that are not used in API output (remove or they are ignored): ${unknownTop.join(', ')}`,
+  );
   process.exit(1);
 }
 
@@ -58,6 +123,15 @@ for (const node of template.nodes) {
   node.parameters.jsCode = jsCode;
 }
 
+const output = assembleApiWorkflow(template);
+
+const outKeys = Object.keys(output);
+const extraOut = outKeys.filter((k) => !OUTPUT_TOP_LEVEL_KEYS.includes(k));
+if (extraOut.length > 0) {
+  console.error(`build: internal error: output has unexpected keys: ${extraOut.join(', ')}`);
+  process.exit(1);
+}
+
 fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(outPath, JSON.stringify(template, null, 2) + '\n', 'utf8');
+fs.writeFileSync(outPath, JSON.stringify(output, null, 2) + '\n', 'utf8');
 console.log('Built →', path.relative(process.cwd(), outPath));

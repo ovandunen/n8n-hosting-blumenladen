@@ -8,11 +8,11 @@ Option B layout: **graph + wiring** live in `src/workflow-template.json`; **Code
 
 | Path | Role |
 |------|------|
-| `src/workflow-template.json` | Workflow skeleton: node ids, types, positions, connections, non-code `parameters`. `jsCode` placeholders are empty; build injects sources. |
+| `src/workflow-template.json` | Workflow skeleton: **only** `name`, `nodes`, `connections`, `settings`, `staticData` (no export-only top-level fields). Code nodes omit `jsCode`; build injects from `src/nodes/`. |
 | `src/nodes/*.js` | Code node bodies (source of truth for logic). |
-| `scripts/build.mjs` | Merges template + `src/nodes` → `build/helloCash-odoo-sync_workflow.json` (syntax-checks each file). |
-| `scripts/validate-workflow.mjs` | Parses built JSON (no n8n). |
-| `scripts/deploy.sh` | Stub — extend with n8n API push. |
+| `scripts/build.mjs` | Merges template + `src/nodes` → `build/helloCash-odoo-sync_workflow.json` with a **whitelist** matching n8n public API create payload (`name`, `nodes`, `connections`, `settings` subset, `staticData`). |
+| `scripts/validate-workflow.mjs` | Parses built JSON and checks allowed top-level and `settings` keys (no n8n). |
+| `scripts/deploy.sh` | Deploys `build/helloCash-odoo-sync_workflow.json`: preflight GET, PUT or POST, then POST activate. Needs `N8N_BASE_URL`, `N8N_API_KEY`; optional `N8N_WORKFLOW_ID`. |
 | `scripts/export.sh` | Stub — extend to pull from n8n into `src/nodes`. |
 | `build/` | **Generated** — listed in `.gitignore`. |
 | `env/.env.example` | Documents required variables (no secrets). |
@@ -87,7 +87,8 @@ scripts/
 | **Production vs mock** | Re-verify HelloCash live API vs Apiary. |
 | **Pagination** | If API is 1-based offset, set `HELLOCASH_CASHBOOK_OFFSET` / `HELLOCASH_INVOICES_OFFSET`. |
 | **Post moves in Odoo** | You may need `action_post` after `create`. |
-| **deploy.sh / export.sh** | Wire to your n8n REST API and credential policy. |
+| **deploy.sh** | Set env vars (or use `env/.env.local`), run `npm run deploy` after `npm run build`. |
+| **export.sh** | Wire to your n8n REST API if you add pull-from-n8n automation. |
 
 ---
 

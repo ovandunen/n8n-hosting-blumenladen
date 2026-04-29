@@ -1,7 +1,7 @@
 /**
  * HelloCash Business — two-phase fetch (production).
  * Phase 1: GET /api/v1/cashBook (paginated limit/offset).
- * Phase 2: GET /api/v1/invoices per linked invoice number (payment + taxes).
+ * Phase 2: GET /api/v1/invoices in bulk (paginated) and index by invoice_number.
  *
  * Env: HELLOCASH_API_TOKEN (required), HELLOCASH_LIST_PATH (default /api/v1/cashBook),
  * HELLOCASH_INVOICES_PATH (default /api/v1/invoices), HELLOCASH_DAYS_BACK (metadata only).
@@ -12,6 +12,8 @@
  *
  * Note: n8n Code sandbox may not define URLSearchParams — use encodeURIComponent helper below.
  */
+
+const NODE = 'HelloCash Fetch';
 
 /**
  * Only include query keys that are actually set (not null/undefined; strings non-empty after trim).
@@ -46,36 +48,36 @@ function joinBaseUrlAndPath(baseUrlRaw, pathRaw) {
 
   const relPath = pathRaw.startsWith('/') ? pathRaw : `/${pathRaw}`;
 
-  try {
-    const u = new URL(baseStr);
-    const rawBasePath = u.pathname || '/';
-    const basePath = rawBasePath.replace(/\/+$/, '') || '';
-    const baseSegs = basePath.split('/').filter(Boolean);
-    const pathSegs = relPath.split('/').filter(Boolean);
+  // n8n Code nodes run in a sandbox where global URL may be undefined.
+  // Parse scheme/host/path conservatively using regex.
+  const m = baseStr.match(/^(https?:\/\/[^\/?#]+)(\/[^?#]*)?$/i);
+  if (!m) {
+    return `${baseStr}${relPath}`;
+  }
+  const origin = m[1];
+  const basePath = String(m[2] || '').replace(/\/+$/, '');
+  const baseSegs = basePath.split('/').filter(Boolean);
+  const pathSegs = relPath.split('/').filter(Boolean);
 
-    let overlap = 0;
-    const max = Math.min(baseSegs.length, pathSegs.length);
-    for (let k = max; k >= 1; k--) {
-      let ok = true;
-      for (let i = 0; i < k; i++) {
-        if (baseSegs[baseSegs.length - k + i] !== pathSegs[i]) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) {
-        overlap = k;
+  let overlap = 0;
+  const max = Math.min(baseSegs.length, pathSegs.length);
+  for (let k = max; k >= 1; k--) {
+    let ok = true;
+    for (let i = 0; i < k; i++) {
+      if (baseSegs[baseSegs.length - k + i] !== pathSegs[i]) {
+        ok = false;
         break;
       }
     }
-
-    const remainder = pathSegs.slice(overlap);
-    const mergedSegs = [...baseSegs, ...remainder];
-    u.pathname = `/${mergedSegs.join('/')}`;
-    return u.toString().replace(/\/+$/, '');
-  } catch {
-    return `${baseStr}${relPath}`;
+    if (ok) {
+      overlap = k;
+      break;
+    }
   }
+
+  const remainder = pathSegs.slice(overlap);
+  const mergedSegs = [...baseSegs, ...remainder];
+  return `${origin}/${mergedSegs.join('/')}`.replace(/\/+$/, '');
 }
 
 /**
@@ -328,23 +330,76 @@ function safeJson(obj, space) {
   }
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+/**
+ * Exponential backoff with jitter.
+ * @param {number} attempt 1..n
+ * @param {number} baseMs
+ * @param {number} maxMs
+ */
+function backoffDelayMs(attempt, baseMs, maxMs) {
+  const exp = Math.min(maxMs, baseMs * Math.pow(2, Math.max(0, attempt - 1)));
+  const jitter = Math.floor(Math.random() * Math.min(250, exp * 0.1));
+  return exp + jitter;
+}
+
+/**
+ * Simple circuit breaker: after N consecutive failures, stop for cooldownMs.
+ */
+function createCircuitBreaker({ failureThreshold, cooldownMs }) {
+  let consecutive = 0;
+  let openUntil = 0;
+  return {
+    /** @param {string} op */
+    assertClosed(op) {
+      const now = Date.now();
+      if (openUntil && now < openUntil) {
+        const remainingMs = openUntil - now;
+        throw new Error(
+          `${NODE}: circuit breaker OPEN for ${op} (cooldown ${Math.ceil(remainingMs / 1000)}s remaining). ` +
+            `Too many consecutive failures; check HelloCash availability and configuration before retrying.`,
+        );
+      }
+    },
+    success() {
+      consecutive = 0;
+      openUntil = 0;
+    },
+    failure() {
+      consecutive++;
+      if (consecutive >= failureThreshold) {
+        openUntil = Date.now() + cooldownMs;
+      }
+    },
+  };
+}
+
 const config = $('Config Loader').first().json;
 const token = $env.HELLOCASH_API_TOKEN?.trim();
 if (!token) {
-  throw new Error('HelloCash Fetch: HELLOCASH_API_TOKEN missing');
+  throw new Error(
+    `${NODE}: HELLOCASH_API_TOKEN missing. Example: HELLOCASH_API_TOKEN="eyJhbGciOi..." (do not paste into logs).`,
+  );
 }
 
 const ignoreHour =
   $env.HELLOCASH_IGNORE_SYNC_HOUR === '1' ||
   String($env.HELLOCASH_IGNORE_SYNC_HOUR || '').toLowerCase() === 'true';
 const hour = new Date().getHours();
-if (!ignoreHour && hour !== config.syncHour) {
+const syncHour = parseInt(String(config.syncHour), 10);
+if (!Number.isFinite(syncHour)) {
+  throw new Error(`${NODE}: config.syncHour is invalid (expected integer), got: ${JSON.stringify(config.syncHour)}`);
+}
+if (!ignoreHour && hour !== syncHour) {
   return [
     {
       json: {
         skipped: true,
         reason: 'sync_hour',
-        syncHour: config.syncHour,
+        syncHour,
         currentHour: hour,
       },
     },
@@ -399,78 +454,121 @@ const authHeaders = {
   Accept: 'application/json',
 };
 
+const breaker = createCircuitBreaker({
+  failureThreshold: parseInt(String($env.HELLOCASH_CB_FAILURE_THRESHOLD || '4'), 10) || 4,
+  cooldownMs: parseInt(String($env.HELLOCASH_CB_COOLDOWN_MS || '120000'), 10) || 120000,
+});
+
+/**
+ * HTTP GET with retry/backoff and circuit breaker.
+ * @param {{ url: string, timeoutMs: number, op: string }} p
+ */
+const getJsonWithRetry = async ({ url, timeoutMs, op }) => {
+  let lastError = null;
+  /** @type {object[]} */
+  const attempts = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const startedAt = nowIso();
+    try {
+      breaker.assertClosed(op);
+      const res = await this.helpers.httpRequest(
+        httpRequestOpts({
+          method: 'GET',
+          url,
+          headers: authHeaders,
+          timeout: timeoutMs,
+          json: true,
+        }),
+      );
+      breaker.success();
+      return { ok: true, res, attempts };
+    } catch (e) {
+      breaker.failure();
+      const { status, bodyStr, hint, rawDump, causeChain } = extractHttpFailureDetails(e);
+      const hintCompact = compactForDisplay(hint) ?? {};
+      const failureExplanation = deriveFailureExplanation(status, hint, bodyStr);
+      attempts.push({
+        attempt,
+        of: maxAttempts,
+        at: startedAt,
+        op,
+        httpStatus: status,
+        failureExplanation,
+        url,
+        request: {
+          method: 'GET',
+          timeoutMs,
+          accept: authHeaders.Accept,
+          authorization: `Bearer ${maskToken(token)}`,
+        },
+        responseBody: bodyStr,
+        hint: hintCompact,
+        rawDump,
+        causeChain,
+      });
+      lastError = e;
+      console.error(`${NODE}: ${op} failed — attempt detail`, attempts[attempts.length - 1]);
+      if (attempt < maxAttempts) {
+        const delay = backoffDelayMs(attempt, intervalMs, 30000);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  return { ok: false, res: null, attempts, lastError };
+};
+
 let lastErr;
 /** @type {unknown} */
 let cashbookResponse;
 /** @type {object[]} */
 const cashbookAttemptHistory = [];
 
-for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-  const attemptStartedAt = new Date().toISOString();
-  try {
-    cashbookResponse = await this.helpers.httpRequest(
-      httpRequestOpts({
-        method: 'GET',
-        url: cashbookUrl,
-        headers: authHeaders,
-        timeout: config.hellocash.timeoutMs,
-        json: true,
-      }),
-    );
-    lastErr = undefined;
+// --- Phase 1: cashbook pagination ---
+const cashbookLimit = Math.max(1, parseInt(String($env.HELLOCASH_CASHBOOK_LIMIT || '1000'), 10) || 1000);
+const cashbookOffsetStart = Math.max(0, parseInt(String(cashbookOffset || '0'), 10) || 0);
+const maxCashbookPages = Math.max(1, parseInt(String($env.HELLOCASH_CASHBOOK_MAX_PAGES || '50'), 10) || 50);
+
+/** @type {object[]} */
+const allEntries = [];
+let pageOffset = cashbookOffsetStart;
+for (let page = 1; page <= maxCashbookPages; page++) {
+  const pageQuery = buildQueryString({
+    limit: String(cashbookLimit),
+    offset: String(pageOffset),
+    search: String($env.HELLOCASH_CASHBOOK_SEARCH || ''),
+    dateFrom: qFrom,
+    dateTo: qTo,
+    mode: String($env.HELLOCASH_CASHBOOK_MODE || ''),
+    showDetails: String($env.HELLOCASH_CASHBOOK_SHOW_DETAILS || ''),
+  });
+  const pageUrl = pageQuery ? `${cashbookUrlNoQuery}?${pageQuery}` : cashbookUrlNoQuery;
+
+  const { ok, res, attempts, lastError } = await getJsonWithRetry({
+    url: pageUrl,
+    timeoutMs: config.hellocash.timeoutMs,
+    op: `cashbook GET page=${page} offset=${pageOffset} limit=${cashbookLimit}`,
+  });
+  cashbookAttemptHistory.push(...attempts);
+  if (!ok) {
+    lastErr = lastError instanceof Error ? lastError : new Error(String(lastError || 'unknown error'));
+    cashbookResponse = undefined;
     break;
-  } catch (e) {
-    const { status, bodyStr, hint, rawDump, causeChain } = extractHttpFailureDetails(e);
-    const hintCompact = compactForDisplay(hint) ?? {};
-    const failureExplanation = deriveFailureExplanation(status, hint, bodyStr);
-    const reqUrl = cashbookUrl;
-
-    const attemptRecord = {
-      attempt,
-      of: maxAttempts,
-      at: attemptStartedAt,
-      status,
-      httpStatus: status,
-      failureExplanation,
-      url: reqUrl,
-      urlParts: {
-        baseUrl,
-        pathNorm,
-        joinedPath: cashbookUrlNoQuery,
-        ...(cashbookQuery ? { query: cashbookQuery } : {}),
-        fullUrlLength: String(reqUrl || '').length,
-      },
-      request: {
-        method: 'GET',
-        timeoutMs: config.hellocash.timeoutMs,
-        accept: authHeaders.Accept,
-        authorization: `Bearer ${maskToken(token)}`,
-      },
-      responseBody: bodyStr,
-      responseBodyLength: String(bodyStr || '').length,
-      hint: hintCompact,
-      rawDump,
-      causeChain,
-    };
-    cashbookAttemptHistory.push(attemptRecord);
-
-    console.error('HelloCash cashbook fetch failed — attempt detail', attemptRecord);
-
-    lastErr = new Error(
-      `HTTP ${status} | HelloCash cashbook attempt ${attempt}/${maxAttempts} failed\n` +
-        `Why: ${failureExplanation}\n` +
-        `URL: ${reqUrl}\n` +
-        `Response: ${bodyStr}\n` +
-        `Hint: ${safeJson(hintCompact, 2)}\n` +
-        `Cause chain: ${safeJson(causeChain, 2)}\n` +
-        `Raw dump: ${safeJson(rawDump, 2)}`,
-    );
-
-    if (attempt < maxAttempts) {
-      await new Promise((r) => setTimeout(r, intervalMs));
-    }
   }
+
+  cashbookResponse = res;
+  const raw =
+    res && typeof res === 'object' && 'entries' in res
+      ? /** @type {{ entries?: unknown }} */ (res).entries
+      : [];
+  const pageEntries = Array.isArray(raw) ? raw : [];
+  if (pageEntries.length === 0) break;
+  allEntries.push(...pageEntries);
+
+  // Stop when a page is not full — typical pagination convention.
+  if (pageEntries.length < cashbookLimit) break;
+  pageOffset += cashbookLimit;
 }
+
 if (cashbookResponse === undefined) {
   const lastAtt =
     cashbookAttemptHistory.length > 0
@@ -496,7 +594,7 @@ if (cashbookResponse === undefined) {
     retryIntervalMs: intervalMs,
     clock: { hour, syncHour: config.syncHour, ignoreSyncHour: ignoreHour },
     token: maskToken(token),
-    cashbookUrl,
+    cashbookUrl: cashbookUrlNoQuery,
     invoiceBaseUrl,
     envPaths: {
       HELLOCASH_LIST_PATH: listPath,
@@ -524,7 +622,7 @@ if (cashbookResponse === undefined) {
 
   // n8n Error panel often shows only the FIRST line — lead with HTTP + node error code.
   const errorFirstLine =
-    `${httpStatusStr} | nodeErrorCode=${hintCode} | HelloCash cashbook GET: ${maxAttempts} attempts failed | ${explainOneLine} | ${hintMsg} | URL=${cashbookUrl} | body=${bodyOneLine || '(empty)'}`;
+    `${httpStatusStr} | nodeErrorCode=${hintCode} | HelloCash cashbook GET failed | ${explainOneLine} | ${hintMsg} | URL=${cashbookUrlNoQuery} | body=${bodyOneLine || '(empty)'}`;
 
   // One summary line already has URL + body; avoid repeating them via lastErr.message/stack here
   // (those are still in diagnostic.lastErrorMessage / lastErrorStack / attemptHistory for tools).
@@ -546,11 +644,7 @@ if (cashbookResponse === undefined) {
   throw err;
 }
 
-const rawEntries =
-  cashbookResponse && typeof cashbookResponse === 'object' && 'entries' in cashbookResponse
-    ? cashbookResponse.entries
-    : [];
-const entries = Array.isArray(rawEntries) ? rawEntries : [];
+const entries = allEntries;
 if (entries.length === 0) {
   return [{ json: { skipped: false, empty: true, message: 'No cashbook entries' } }];
 }
@@ -570,68 +664,107 @@ const invoiceNumbers = [
   ),
 ];
 
-const invoicesMap = new Map();
-
-for (const invNum of invoiceNumbers) {
-  let invRequestUrl = invoiceBaseUrl;
-  try {
-    const invOffset =
+// --- Phase 2: invoice bulk fetch (paginated) ---
+const invoiceFetchMode = String($env.HELLOCASH_INVOICE_FETCH_MODE || 'bulk').toLowerCase();
+const invDateFrom =
+  $env.HELLOCASH_INVOICES_DATE_FROM !== undefined && $env.HELLOCASH_INVOICES_DATE_FROM !== null
+    ? String($env.HELLOCASH_INVOICES_DATE_FROM)
+    : qFrom;
+const invDateTo =
+  $env.HELLOCASH_INVOICES_DATE_TO !== undefined && $env.HELLOCASH_INVOICES_DATE_TO !== null
+    ? String($env.HELLOCASH_INVOICES_DATE_TO)
+    : qTo;
+const invoiceLimit = Math.max(1, parseInt(String($env.HELLOCASH_INVOICES_LIMIT || '1000'), 10) || 1000);
+const invoiceOffsetStart = Math.max(
+  0,
+  parseInt(
+    String(
       $env.HELLOCASH_INVOICES_OFFSET !== undefined && $env.HELLOCASH_INVOICES_OFFSET !== null
-        ? String($env.HELLOCASH_INVOICES_OFFSET)
-        : '0';
-    const invDateFrom =
-      $env.HELLOCASH_INVOICES_DATE_FROM !== undefined && $env.HELLOCASH_INVOICES_DATE_FROM !== null
-        ? String($env.HELLOCASH_INVOICES_DATE_FROM)
-        : qFrom;
-    const invDateTo =
-      $env.HELLOCASH_INVOICES_DATE_TO !== undefined && $env.HELLOCASH_INVOICES_DATE_TO !== null
-        ? String($env.HELLOCASH_INVOICES_DATE_TO)
-        : qTo;
+        ? $env.HELLOCASH_INVOICES_OFFSET
+        : '0',
+    ),
+    10,
+  ) || 0,
+);
+const maxInvoicePages = Math.max(1, parseInt(String($env.HELLOCASH_INVOICES_MAX_PAGES || '50'), 10) || 50);
+const invoiceTimeoutMs = Math.max(
+  5000,
+  parseInt(String($env.HELLOCASH_INVOICES_TIMEOUT_MS || String(config.hellocash.timeoutMs)), 10) ||
+    config.hellocash.timeoutMs,
+);
 
-    const invQuery = buildQueryString({
-      limit: String($env.HELLOCASH_INVOICES_LIMIT || '1000'),
-      offset: invOffset,
-      search: invNum,
-      dateFrom: invDateFrom,
-      dateTo: invDateTo,
-      mode: String($env.HELLOCASH_INVOICES_MODE || ''),
-      showDetails: String($env.HELLOCASH_INVOICES_SHOW_DETAILS || ''),
-    });
+const invoicesMap = new Map();
+const wantedInvoiceSet = new Set(invoiceNumbers.map(String));
 
-    invRequestUrl = invQuery ? `${invoiceBaseUrl}?${invQuery}` : `${invoiceBaseUrl}`;
-    const invResponse = await this.helpers.httpRequest(
-      httpRequestOpts({
-        method: 'GET',
-        url: invRequestUrl,
-        headers: authHeaders,
-        timeout: config.hellocash.timeoutMs,
-        json: true,
-      }),
-    );
-    const invList = invResponse?.invoices;
-    if (Array.isArray(invList) && invList.length > 0) {
-      const inv =
-        invList.find((x) => x && String(x.invoice_number) === String(invNum)) ?? invList[0];
-      if (inv && inv.invoice_cancellation !== '1') {
-        invoicesMap.set(invNum, inv);
+if (invoiceFetchMode !== 'off' && wantedInvoiceSet.size > 0) {
+  if (invoiceFetchMode === 'perinvoice') {
+    // Backwards-compatible fallback (slower). Kept for API variants where bulk is not supported.
+    for (const invNum of invoiceNumbers) {
+      let invRequestUrl = invoiceBaseUrl;
+      try {
+        const invQuery = buildQueryString({
+          limit: String(invoiceLimit),
+          offset: String(invoiceOffsetStart),
+          search: invNum,
+          dateFrom: invDateFrom,
+          dateTo: invDateTo,
+          mode: String($env.HELLOCASH_INVOICES_MODE || ''),
+          showDetails: String($env.HELLOCASH_INVOICES_SHOW_DETAILS || ''),
+        });
+        invRequestUrl = invQuery ? `${invoiceBaseUrl}?${invQuery}` : `${invoiceBaseUrl}`;
+        const { ok, res } = await getJsonWithRetry({
+          url: invRequestUrl,
+          timeoutMs: invoiceTimeoutMs,
+          op: `invoice GET search=${invNum}`,
+        });
+        if (!ok) continue;
+        const invList = res?.invoices;
+        if (Array.isArray(invList) && invList.length > 0) {
+          const inv = invList.find((x) => x && String(x.invoice_number) === String(invNum)) ?? invList[0];
+          if (inv && inv.invoice_cancellation !== '1') invoicesMap.set(String(invNum), inv);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`${NODE}: failed to fetch invoice ${invNum}: ${msg}`);
       }
     }
-  } catch (e) {
-    const { status, bodyStr, hint, rawDump, causeChain } = extractHttpFailureDetails(e);
-    const failureExplanation = deriveFailureExplanation(status, hint, bodyStr);
-    console.error('HelloCash invoice fetch failed', {
-      invNum,
-      attempt: 'single',
-      httpStatus: status,
-      failureExplanation,
-      url: invRequestUrl,
-      responseBody: bodyStr,
-      hint: compactForDisplay(hint) ?? {},
-      rawDump,
-      causeChain,
-    });
-    const msg = e instanceof Error ? e.message : String(e);
-    console.warn(`HelloCash Fetch: failed to fetch invoice ${invNum}: ${msg}`);
+  } else {
+    // Preferred: fetch invoices by date range (and optionally details), then index by invoice_number.
+    let off = invoiceOffsetStart;
+    for (let page = 1; page <= maxInvoicePages; page++) {
+      const invQuery = buildQueryString({
+        limit: String(invoiceLimit),
+        offset: String(off),
+        // Important: do NOT set "search" here; we want one bulk pass.
+        dateFrom: invDateFrom,
+        dateTo: invDateTo,
+        mode: String($env.HELLOCASH_INVOICES_MODE || ''),
+        showDetails: String($env.HELLOCASH_INVOICES_SHOW_DETAILS || ''),
+      });
+      const pageUrl = invQuery ? `${invoiceBaseUrl}?${invQuery}` : invoiceBaseUrl;
+      const { ok, res } = await getJsonWithRetry({
+        url: pageUrl,
+        timeoutMs: invoiceTimeoutMs,
+        op: `invoices GET page=${page} offset=${off} limit=${invoiceLimit}`,
+      });
+      if (!ok) break;
+      const invList = res?.invoices;
+      const pageInvoices = Array.isArray(invList) ? invList : [];
+      if (pageInvoices.length === 0) break;
+
+      for (const inv of pageInvoices) {
+        const invNum = inv && typeof inv === 'object' ? String(inv.invoice_number ?? '') : '';
+        if (!invNum) continue;
+        if (!wantedInvoiceSet.has(invNum)) continue;
+        if (inv.invoice_cancellation === '1') continue;
+        invoicesMap.set(invNum, inv);
+      }
+
+      // Stop when page is not full OR we already captured all wanted invoices.
+      if (pageInvoices.length < invoiceLimit) break;
+      if (invoicesMap.size >= wantedInvoiceSet.size) break;
+      off += invoiceLimit;
+    }
   }
 }
 
@@ -643,10 +776,12 @@ return [
         entries,
         invoices: Object.fromEntries(invoicesMap),
         meta: {
-          fetchedAt: new Date().toISOString(),
+          fetchedAt: nowIso(),
           entryCount: entries.length,
           invoiceCount: invoicesMap.size,
           daysBack: Number.isFinite(daysBack) ? daysBack : 1,
+          syncHour: syncHour,
+          invoiceFetchMode,
         },
       },
     },

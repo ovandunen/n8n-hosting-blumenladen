@@ -31,9 +31,9 @@ Docker Compose loads **`.env`** in this folder for `${VAR}` substitution. If you
 docker compose --env-file env up -d
 ```
 
-Copy [`.env.example`](.env.example) to `.env` and fill in secrets.
+Copy [`.env.example`](.env.example) to `.env` and fill in secrets. For the Blumenladen profile you can use `docker compose --env-file .env-blumenladen up -d` (keep a private backup of any env file that holds secrets).
 
-**Where `ODOO_BASE_URL` is read:** Values under `n8n: environment:` in `docker-compose.yml` use `${ODOO_BASE_URL:-…}`. Those placeholders are filled from the **host** when Compose parses the file — typically from **`.env` next to `docker-compose.yml`**, or from your shell, or from `--env-file`. They are **not** read from inside the `env` file automatically unless that file is named `.env` or you pass `--env-file env`. Whatever ends up in the container as `ODOO_BASE_URL` is what n8n Code nodes see as `$env.ODOO_BASE_URL`.
+**Where `ODOO_BASE_URL` is read:** Values under `n8n: environment:` in `docker-compose.yml` use `${ODOO_BASE_URL:?…}` (required — compose fails if unset). Those placeholders are filled from the **host** when Compose parses the file — typically from **`.env` next to `docker-compose.yml`**, or from your shell, or from `--env-file`. They are **not** read from inside the `env` file automatically unless that file is named `.env` or you pass `--env-file env`. Whatever ends up in the container as `ODOO_BASE_URL` is what n8n Code nodes see as `$env.ODOO_BASE_URL`.
 
 **Must be a full URL:** Use `http://host.docker.internal:8069` (or your real Odoo origin). If you set `ODOO_BASE_URL=8069`, the workflow would call `8069/jsonrpc` and fail with `ECONNREFUSED`.
 
