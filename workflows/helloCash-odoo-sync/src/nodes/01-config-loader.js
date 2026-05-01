@@ -90,6 +90,15 @@ function parseIntEnv(envName, raw) {
   return n;
 }
 
+/** Optional env: integer ≥ min; ignores empty/missing env. */
+function optionalIntGe(envName, defaultVal, min) {
+  const raw = $env[envName];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return defaultVal;
+  const n = parseInt(String(raw).trim(), 10);
+  if (!Number.isFinite(n) || n < min) return defaultVal;
+  return n;
+}
+
 const kasse = parseIntEnv('ACCOUNT_KASSE', $env.ACCOUNT_KASSE);
 const bank = parseIntEnv('ACCOUNT_BANK', $env.ACCOUNT_BANK);
 const erloese = parseIntEnv('ACCOUNT_ERLOESE', $env.ACCOUNT_ERLOESE);
@@ -132,10 +141,10 @@ const config = {
     19: taxId19,
   },
 
-  /** Retry policy for HTTP / RPC (NFR-3). */
+  /** Retry policy for HTTP / RPC (HelloCash fetch + Odoo JSON-RPC via config.retry). */
   retry: {
-    maxAttempts: 3,
-    intervalMs: 5000,
+    maxAttempts: optionalIntGe('SYNC_RPC_MAX_ATTEMPTS', 2, 1),
+    intervalMs: optionalIntGe('SYNC_RPC_RETRY_INTERVAL_MS', 2500, 250),
   },
 
   syncHour: parseIntEnv('SYNC_HOUR', $env.SYNC_HOUR),

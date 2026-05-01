@@ -112,7 +112,7 @@ for (const node of template.nodes) {
   }
   const jsCode = fs.readFileSync(filePath, 'utf8');
   try {
-    new AsyncFunction('$env', '$', 'items', jsCode);
+    new AsyncFunction('$env', '$', 'items', '$http', jsCode);
   } catch (e) {
     console.error(`Syntax error in ${path.relative(root, filePath)}: ${e instanceof Error ? e.message : e}`);
     process.exit(1);

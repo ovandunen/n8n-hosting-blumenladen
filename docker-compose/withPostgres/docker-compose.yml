@@ -48,6 +48,9 @@ services:
       - N8N_USER_MANAGEMENT_MAIN_USER_EMAIL=${N8N_USER:?Set N8N_USER in your .env file}
       - N8N_USER_MANAGEMENT_MAIN_USER_PASSWORD=${N8N_PASSWORD:?Set N8N_PASSWORD in your .env file}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in your .env file}
+      # debug level
+      - N8N_LOG_LEVEL=debug
+      - N8N_RUNNERS_TASK_TIMEOUT=60
       - GENERIC_TIMEZONE=${TZ:-UTC}
       - TZ=${TZ:-UTC}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true

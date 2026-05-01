@@ -543,6 +543,34 @@ createdAt: nowIso(),
 });
 }
 
+// ── Post-loop failure gate ──────────────────────
+const hardFailures = results.filter(
+(r) =>
+r.json &&
+(r.json.success === false ||
+r.json.reason === 'dedupe_check_failed' ||
+r.json.reason === 'invalid_payload'),
+);
+
+if (hardFailures.length > 0) {
+const summary = hardFailures.map((r) => ({
+ref: r.json.ref ?? 'unknown',
+reason: r.json.reason ?? 'create_failed',
+error: r.json.error ?? 'unknown error',
+}));
+console.error(
+`${NODE}: ${hardFailures.length} item(s) failed — throwing so n8n error branch fires error email`,
+{ at: nowIso(), failureCount: hardFailures.length, totalItems: results.length, failures: summary },
+);
+const lines = summary
+.map((f) => `  • ref=${f.ref} reason=${f.reason}: ${f.error}`)
+.join('\n');
+throw new Error(
+`${NODE}: ${hardFailures.length} of ${results.length} move(s) failed:\n${lines}\n\n` +
+`Check Odoo connectivity, journal config (journalId=${config?.odoo?.journalId}), and the entries above.`,
+);
+}
+
 return results;
 }
 
