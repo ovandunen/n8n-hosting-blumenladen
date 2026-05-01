@@ -45,6 +45,10 @@ export async function runAsyncCodeNode(fileName, ctx = {}) {
       },
     },
   };
-  const fn = new AsyncFunction('$env', '$', 'items', code);
-  return fn.call(self, $env, $, items);
+  /** n8n Code sandbox exposes `$http`; map tests' `helpers.httpRequest` mocks to `{ data }` like n8n. */
+  const $http =
+    ctx.$http ?? ((opts) => Promise.resolve(self.helpers.httpRequest(opts)).then((payload) => ({ data: payload })));
+
+  const fn = new AsyncFunction('$env', '$', 'items', '$http', code);
+  return fn.call(self, $env, $, items, $http);
 }

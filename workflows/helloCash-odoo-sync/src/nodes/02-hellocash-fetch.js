@@ -575,6 +575,8 @@ if (cashbookResponse === undefined) {
       ? cashbookAttemptHistory[cashbookAttemptHistory.length - 1]
       : {};
 
+  const lastHttp = lastAtt.httpStatus ?? lastAtt.status ?? 'no-status';
+
   const bodyOneLine = String(lastAtt.responseBody ?? '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -583,11 +585,11 @@ if (cashbookResponse === undefined) {
   const hintCode = lastAtt.hint?.code ?? lastAtt.hint?.httpCode ?? 'n/a';
   const failureExplanation =
     lastAtt.failureExplanation ??
-    deriveFailureExplanation(lastAtt.status ?? 'no-status', lastAtt.hint ?? {}, bodyOneLine);
+    deriveFailureExplanation(lastHttp, lastAtt.hint ?? {}, bodyOneLine);
 
   const diagnostic = {
     phase: 'cashbook GET',
-    httpStatus: lastAtt.status ?? 'no-status',
+    httpStatus: lastHttp,
     nodeErrorCode: hintCode,
     failureExplanation,
     failedAfterAttempts: maxAttempts,
@@ -608,7 +610,7 @@ if (cashbookResponse === undefined) {
   const diagnosticJson = safeJson(diagnostic, 2);
 
   console.error('HelloCash cashbook — FINAL FAILURE (all attempts exhausted)', {
-    httpStatus: lastAtt.status ?? 'no-status',
+    httpStatus: lastHttp,
     nodeErrorCode: hintCode,
     ...diagnostic,
   });
@@ -616,8 +618,8 @@ if (cashbookResponse === undefined) {
   const explainOneLine = String(failureExplanation).replace(/\s+/g, ' ').trim().slice(0, 280);
 
   const httpStatusStr =
-    lastAtt.status !== undefined && lastAtt.status !== null && lastAtt.status !== 'no-status'
-      ? `HTTP ${lastAtt.status}`
+    lastHttp !== undefined && lastHttp !== null && lastHttp !== 'no-status'
+      ? `HTTP ${lastHttp}`
       : 'HTTP status unknown (no response — network/DNS/TLS/wrong URL?)';
 
   // n8n Error panel often shows only the FIRST line — lead with HTTP + node error code.
@@ -630,7 +632,7 @@ if (cashbookResponse === undefined) {
     `${errorFirstLine}\n` +
     `\n` +
     `--- CONTEXT ---\n` +
-    `httpStatus: ${lastAtt.status ?? 'no-status'}  nodeErrorCode: ${hintCode}\n` +
+    `httpStatus: ${lastHttp}  nodeErrorCode: ${hintCode}\n` +
     `invoiceBaseUrl: ${invoiceBaseUrl}\n` +
     `timeoutMs: ${config.hellocash.timeoutMs}  retryIntervalMs: ${intervalMs}\n` +
     `token (masked): ${maskToken(token)}\n` +
