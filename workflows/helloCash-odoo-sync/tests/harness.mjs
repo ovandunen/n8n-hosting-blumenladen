@@ -18,8 +18,14 @@ export function runSyncCodeNode(fileName, ctx = {}) {
   const $env = ctx.$env ?? {};
   const $ = ctx.$ ?? (() => ({ first: () => ({ json: {} }) }));
   const items = ctx.items ?? [{ json: {} }];
-  const fn = new Function('$env', '$', 'items', code);
-  return fn($env, $, items);
+  const item0 = items[0] ?? { json: {} };
+  const $input = ctx.$input ?? { item: item0 };
+  const fn = new Function('$env', '$', 'items', '$input', code);
+  const r = fn($env, $, items, $input);
+  // n8n runOnceForEachItem returns a single { json } object; tests expect an items[] array.
+  if (Array.isArray(r)) return r;
+  if (r && typeof r === 'object' && 'json' in r) return [r];
+  return [{ json: r }];
 }
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -38,6 +44,8 @@ export async function runAsyncCodeNode(fileName, ctx = {}) {
   const $env = ctx.$env ?? {};
   const $ = ctx.$ ?? (() => ({ first: () => ({ json: {} }) }));
   const items = ctx.items ?? [{ json: {} }];
+  const item0 = items[0] ?? { json: {} };
+  const $input = ctx.$input ?? { item: item0 };
   const self = ctx.self ?? {
     helpers: {
       httpRequest: async () => {
@@ -49,6 +57,6 @@ export async function runAsyncCodeNode(fileName, ctx = {}) {
   const $http =
     ctx.$http ?? ((opts) => Promise.resolve(self.helpers.httpRequest(opts)).then((payload) => ({ data: payload })));
 
-  const fn = new AsyncFunction('$env', '$', 'items', '$http', code);
-  return fn.call(self, $env, $, items, $http);
+  const fn = new AsyncFunction('$env', '$', 'items', '$http', '$input', code);
+  return fn.call(self, $env, $, items, $http, $input);
 }

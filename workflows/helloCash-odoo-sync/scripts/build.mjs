@@ -72,7 +72,12 @@ const CODE_MAP = {
   'Config Loader': path.join(root, 'src', 'nodes', '01-config-loader.js'),
   'HelloCash Fetch': path.join(root, 'src', 'nodes', '02-hellocash-fetch.js'),
   'Map to Odoo': path.join(root, 'src', 'nodes', '03-map-to-odoo.js'),
-  'Odoo Post Moves': path.join(root, 'src', 'nodes', '04-odoo-post-moves.js'),
+  'Odoo Prepare Payload': path.join(root, 'src', 'nodes', '05-odoo-prepare-payload-canvas.js'),
+  'Odoo Pass Through Skipped': path.join(root, 'src', 'nodes', '09-odoo-pass-skipped-canvas.js'),
+  'Odoo Dedupe Check': path.join(root, 'src', 'nodes', '11-odoo-dedupe-http-canvas.js'),
+  'Odoo Create Move': path.join(root, 'src', 'nodes', '12-odoo-create-http-canvas.js'),
+  'Odoo Skip Create Row': path.join(root, 'src', 'nodes', '08-odoo-skip-create-row-canvas.js'),
+  'Odoo Process Results': path.join(root, 'src', 'nodes', '10-odoo-process-results-canvas.js'),
 };
 
 const templatePath = path.join(root, 'src', 'workflow-template.json');
@@ -112,7 +117,7 @@ for (const node of template.nodes) {
   }
   const jsCode = fs.readFileSync(filePath, 'utf8');
   try {
-    new AsyncFunction('$env', '$', 'items', '$http', jsCode);
+    new AsyncFunction('$env', '$', 'items', '$http', '$input', jsCode);
   } catch (e) {
     console.error(`Syntax error in ${path.relative(root, filePath)}: ${e instanceof Error ? e.message : e}`);
     process.exit(1);

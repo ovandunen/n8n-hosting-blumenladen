@@ -1,17 +1,29 @@
 /**
  * Config Loader — HelloCash Business → Odoo accounting sync.
  * Validates env; returns config for $('Config Loader').first().json.
- * ODOO_PASSWORD is required here but never included in output json.
+ * Secrets (ODOO_PASSWORD, API keys) never appear in output json.
+ *
+ * Odoo transport: set ODOO_RPC=json2 for External JSON-2 (Odoo 19+, Bearer API key).
+ * Default ODOO_RPC=jsonrpc (legacy POST …/jsonrpc + execute_kw). ODOO_USE_JSON2=1 also selects json2.
  */
 
 const NODE = 'Config Loader';
 
-const REQUIRED = [
+/** @returns {'jsonrpc' | 'json2'} */
+function parseOdooRpcMode() {
+  const explicit = String($env.ODOO_RPC ?? '').trim().toLowerCase();
+  if (explicit === 'json2' || explicit === 'jsonrpc') return explicit;
+  const flag = String($env.ODOO_USE_JSON2 ?? '').trim().toLowerCase();
+  if (flag === '1' || flag === 'true' || flag === 'yes') return 'json2';
+  return 'jsonrpc';
+}
+
+const odooRpcMode = parseOdooRpcMode();
+
+const REQUIRED_COMMON = [
   'HELLOCASH_BASE_URL',
   'ODOO_BASE_URL',
   'ODOO_DB',
-  'ODOO_UID',
-  'ODOO_PASSWORD',
   'ODOO_JOURNAL_ID',
   'ACCOUNT_KASSE',
   'ACCOUNT_BANK',
@@ -23,12 +35,34 @@ const REQUIRED = [
   'ERROR_EMAIL',
 ];
 
-for (const name of REQUIRED) {
+const REQUIRED_JSONRPC = ['ODOO_UID', 'ODOO_PASSWORD'];
+
+for (const name of REQUIRED_COMMON) {
   const val = $env[name];
   if (val === undefined || val === null || String(val).trim() === '') {
     throw new Error(
       `${NODE}: required environment variable is missing or empty: ${name}. ` +
         'Set it in n8n (Settings → Variables / environment) and ensure this execution can read it.',
+    );
+  }
+}
+
+if (odooRpcMode === 'jsonrpc') {
+  for (const name of REQUIRED_JSONRPC) {
+    const val = $env[name];
+    if (val === undefined || val === null || String(val).trim() === '') {
+      throw new Error(
+        `${NODE}: required environment variable is missing or empty: ${name}. ` +
+          'Set it in n8n (Settings → Variables / environment) and ensure this execution can read it.',
+      );
+    }
+  }
+} else {
+  const apiKey = String($env.ODOO_API_KEY ?? '').trim();
+  const pwd = String($env.ODOO_PASSWORD ?? '').trim();
+  if (!apiKey && !pwd) {
+    throw new Error(
+      `${NODE}: ODOO_RPC=json2 requires a non-empty ODOO_API_KEY or ODOO_PASSWORD (used as Authorization: bearer … per Odoo External JSON-2 API).`,
     );
   }
 }
@@ -115,15 +149,22 @@ const config = {
     timeoutMs: 30000,
   },
 
-  /** Odoo JSON-RPC target (password stays in $env.ODOO_PASSWORD only). */
+  /** Odoo: jsonrpc (legacy) or json2 (Odoo 19+ External JSON-2, Bearer token). */
   odoo: {
     baseUrl: (() => {
       let u = String($env.ODOO_BASE_URL).trim().replace(/\/+$/, '');
       if (u.endsWith('/jsonrpc')) u = u.replace(/\/jsonrpc$/, '');
+      if (/\/json\/2\/?$/i.test(u)) u = u.replace(/\/json\/2\/?$/i, '');
       return u;
     })(),
     db: String($env.ODOO_DB).trim(),
-    uid: parseIntEnv('ODOO_UID', $env.ODOO_UID),
+    rpc: odooRpcMode,
+    uid:
+      odooRpcMode === 'jsonrpc'
+        ? parseIntEnv('ODOO_UID', $env.ODOO_UID)
+        : $env.ODOO_UID !== undefined && $env.ODOO_UID !== null && String($env.ODOO_UID).trim() !== ''
+          ? parseIntEnv('ODOO_UID', $env.ODOO_UID)
+          : null,
     journalId: parseIntEnv('ODOO_JOURNAL_ID', $env.ODOO_JOURNAL_ID),
   },
 

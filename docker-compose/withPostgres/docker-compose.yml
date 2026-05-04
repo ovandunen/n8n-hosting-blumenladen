@@ -50,12 +50,16 @@ services:
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in your .env file}
       # debug level
       - N8N_LOG_LEVEL=debug
-      - N8N_RUNNERS_TASK_TIMEOUT=60
+      - N8N_RUNNERS_TASK_TIMEOUT=120
       - GENERIC_TIMEZONE=${TZ:-UTC}
       - TZ=${TZ:-UTC}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - ODOO_PASSWORD=${ODOO_PASSWORD:?Set ODOO_PASSWORD in your .env file}
+      # Odoo 19+ External JSON-2: set ODOO_RPC=json2 and use ODOO_API_KEY (Bearer). Default jsonrpc.
+      - ODOO_RPC=${ODOO_RPC:-jsonrpc}
+      # HTTP timeout (ms) for Odoo Dedupe Check / Odoo Create Move Code nodes (SaaS can exceed 30s).
+      - ODOO_HTTP_TIMEOUT_MS=${ODOO_HTTP_TIMEOUT_MS:-90000}
 
       # helloCash Config
       - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://api.hellocash.business}
@@ -68,14 +72,13 @@ services:
       - ODOO_BASE_URL=${ODOO_BASE_URL:?Set ODOO_BASE_URL in your .env file}
       - ODOO_DB=${ODOO_DB:?Set ODOO_DB in your .env file}
       - ODOO_UID=${ODOO_UID:?Set ODOO_UID in your .env file}
+      - ODOO_API_KEY=${ODOO_API_KEY:?Set ODOO_API_KEY in your env. file}
 
       # Account IDs (from account_group)
       - ACCOUNT_KASSE=${ACCOUNT_KASSE:?Set ACCOUNT_KASSE in your .env file}
       - ACCOUNT_BANK=${ACCOUNT_BANK:?Set ACCOUNT_BANK in your .env file}
       - ACCOUNT_ERLOESE=${ACCOUNT_ERLOESE:?Set ACCOUNT_ERLOESE in your .env file}
       - ACCOUNT_GUTSCHEIN=${ACCOUNT_GUTSCHEIN:?Set ACCOUNT_GUTSCHEIN in your .env file}
-      - ACCOUNT_UST_19=${ACCOUNT_UST_19:?Set ACCOUNT_UST_19 in your .env file}
-      - ACCOUNT_UST_7=${ACCOUNT_UST_7:?Set ACCOUNT_UST_7 in your .env file}
 
       # Tax IDs (from account_tax)
       - TAX_ID_19=${TAX_ID_19:?Set TAX_ID_19 in your .env file}

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { builtWorkflowPath } from './fixtures.mjs';
 
-test('Split Odoo batches: Odoo Post Moves connects to loop output (main[1]), not done (main[0])', () => {
+test('Split Odoo batches: Odoo Prepare Payload connects to loop output (main[1]), not done (main[0])', () => {
   const wf = JSON.parse(fs.readFileSync(builtWorkflowPath, 'utf8'));
   const split = wf.nodes.find((n) => n.name === 'Split Odoo batches');
   assert.ok(split, 'Split Odoo batches node missing');
@@ -18,7 +18,7 @@ test('Split Odoo batches: Odoo Post Moves connects to loop output (main[1]), not
 
   const doneOut = conns[0];
   const loopOut = conns[1];
-  const odooName = 'Odoo Post Moves';
+  const odooName = 'Odoo Prepare Payload';
 
   const doneTargets = Array.isArray(doneOut) ? doneOut.map((c) => c.node) : [];
   const loopTargets = Array.isArray(loopOut) ? loopOut.map((c) => c.node) : [];

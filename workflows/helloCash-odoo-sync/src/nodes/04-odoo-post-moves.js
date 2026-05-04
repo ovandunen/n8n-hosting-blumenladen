@@ -4,9 +4,9 @@
 *
 * KORREKTUREN:
 * 1. Gesamter Hauptcode in async IIFE gepackt, da await nur innerhalb async erlaubt ist.
-* 2. this.helpers.httpRequest durch n8n-eigenes $http ersetzt.
-* 3. $http-Antwort: response.data enthält das JSON-RPC-Ergebnis.
-* 4. Fehlerbehandlung angepasst (statusCode aus $http-Response).
+* 2. JSON-RPC via this.helpers.httpRequest (gleiches Muster wie HelloCash Fetch, json:true).
+* 3. Antwort ist das geparste JSON-RPC-Objekt (result / error).
+* 4. Fehlerbehandlung angepasst (statusCode aus Request-Fehlern).
 * 5. Rückgabe des Promise von run() an n8n.
 */
 
@@ -18,6 +18,178 @@ return JSON.stringify(v, null, 2);
 } catch {
 return '[unserializable]';
 }
+}
+
+/**
+ * n8n’s Code-node error UI often strips URL-like fragments; the visible error can shrink to a
+ * single token (e.g. a reason code). Scrub throws that are meant for the UI so host/db stay readable.
+ * Full URLs are still logged via N8N_ODPO_*_JSON console lines (grep those).
+ * @param {string} s
+ */
+function scrubHttpTokensForN8nErrorUi(s) {
+return String(s ?? '')
+.replace(/https:\/\//gi, 'TLS443__')
+.replace(/http:\/\//gi, 'PLAIN80__')
+.replace(/https:/gi, 'TLS443_')
+.replace(/http:/gi, 'PLAIN80_');
+}
+
+/** @param {string} r */
+function reasonLabelForUi(r) {
+const x = String(r ?? '');
+if (x === 'dedupe_check_failed') return 'idempotency-RPC-failed';
+if (x === 'create_failed') return 'create-move-failed';
+if (x === 'invalid_payload') return 'invalid-payload';
+return x.replace(/_/g, '-');
+}
+
+/** Readable text from caught RPC/errors (avoid empty or “unknown”). */
+/** @param {unknown} err */
+function errorToBriefText(err) {
+if (err == null) {
+return 'no error object captured — see console.error RPC lines above for this ref';
+}
+if (typeof err === 'string') {
+const t = err.trim();
+return t ? t : '(empty error string)';
+}
+if (err instanceof Error) {
+return (
+(err.message && String(err.message).trim()) ||
+(err.stack && String(err.stack).split('\n')[0]?.trim()) ||
+err.name ||
+'Error instance without message (check stack in logs)'
+);
+}
+if (typeof err === 'object') {
+try {
+const s = JSON.stringify(err, null, 2);
+return s.length > 12000 ? `${s.slice(0, 12000)}\n…(truncated)` : s;
+} catch {
+return String(err);
+}
+}
+return String(err);
+}
+
+/** @param {Record<string, unknown> | null | undefined} j */
+function describeFailedMoveItem(j) {
+if (!j || typeof j !== 'object') {
+return {
+ref: 'unknown',
+reason: 'invalid_item',
+errorDetail: 'result item had no json object',
+errorOneLine: 'result item had no json object',
+};
+}
+const ov = j.odooVals;
+const ref =
+typeof j.ref === 'string'
+? j.ref
+: ov && typeof ov === 'object' && typeof /** @type {{ ref?: unknown }} */ (ov).ref === 'string'
+? String(/** @type {{ ref: string }} */ (ov).ref)
+: 'unknown';
+const reason =
+typeof j.reason === 'string' ? j.reason : j.success === false ? 'success_false_no_reason' : 'unspecified';
+const rawErr = j.error;
+
+let errorDetail;
+if (rawErr !== undefined && rawErr !== null && String(rawErr).trim() !== '') {
+errorDetail =
+typeof rawErr === 'string' ? rawErr : typeof rawErr === 'object' ? safeStringify(rawErr) : String(rawErr);
+} else {
+errorDetail = [
+`${NODE}: item marked failed without json.error`,
+`success=${JSON.stringify(j.success)}`,
+`odooSkipped=${JSON.stringify(j.odooSkipped)}`,
+`mappedEmpty=${JSON.stringify(j.mappedEmpty)}`,
+`hellocashId=${j.hellocashId ?? 'n/a'}`,
+`hellocashNumber=${j.hellocashNumber ?? 'n/a'}`,
+`message=${typeof j.message === 'string' ? j.message : 'n/a'}`,
+`journalHint ref=${typeof j.odooVals === 'object' && j.odooVals ? JSON.stringify((/** @type {{ journal_id?: unknown }} */ (j.odooVals)).journal_id) : 'n/a'}`,
+].join(' | ');
+}
+const errorOneLine = String(errorDetail).replace(/\s+/g, ' ').trim();
+
+return {
+ref,
+reason,
+errorDetail,
+errorOneLine: errorOneLine.length > 2000 ? `${errorOneLine.slice(0, 1997)}…` : errorOneLine,
+};
+}
+
+/**
+ * n8n’s error UI often strips "https:" from messages, leaving "//host..." only.
+ * Never rely on a single "scheme://host" token in the preview line — split parts and lines.
+ * @param {string} baseUrlRaw from config.odoo.baseUrl
+ */
+function odooEndpointForErrors(baseUrlRaw) {
+const raw = String(baseUrlRaw ?? '').trim();
+if (!raw || raw === 'n/a') {
+return {
+scheme: 'n/a',
+host: 'n/a',
+pathAfterHost: '',
+tlsOn: false,
+rpcHostPathForUi: 'n/a',
+rawSpelled: 'n/a',
+};
+}
+const normalized = raw.startsWith('//') ? `https:${raw}` : raw;
+const m = normalized.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]+)(\/[^?#]*)?$/i);
+if (!m) {
+return {
+scheme: '?',
+host: raw.replace(/^\/+/, ''),
+pathAfterHost: '',
+tlsOn: false,
+rpcHostPathForUi: `UNPARSED_BASE=${raw}`,
+rawSpelled: raw.replace(/:\/\//, ' _COLON__SLASHSLASH_ '),
+};
+}
+const scheme = String(m[1]).toLowerCase();
+const host = String(m[2]);
+const pathAfterHost = String(m[3] || '').replace(/\/+$/, '');
+const tlsOn = scheme === 'https' || scheme === 'wss';
+const rpcHostPathForUi = `HOST=${host} PATH_ON_HOST=${pathAfterHost}/jsonrpc TLS_ON=${tlsOn ? '1' : '0'}`;
+const rawSpelled = raw.includes('://') ? raw.replace(/:\/\//, ' _COLON__SLASHSLASH_ ') : raw;
+return {
+scheme,
+host,
+pathAfterHost,
+tlsOn,
+rpcHostPathForUi,
+rawSpelled,
+};
+}
+
+/** Appended to per-RPC throws (HTTP layer + Odoo RPC error object). */
+function odooRpcTroubleshootingAppendix() {
+return (
+`\n\n--- Odoo JSON-RPC context (${NODE} uses this.helpers.httpRequest in Code, not the HTTP Request node) ---\n` +
+`If Odoo looks like it never received service/method/args:\n` +
+`  • Wrong ODOO_BASE_URL — config.odoo.baseUrl must be the correct Odoo origin for that database.\n` +
+`  • Wrong path — this code POSTs JSON-RPC 2.0 only to {base}/jsonrpc. It is not /web/jsonrpc or the website; HTML/404/login pages mean the URL/path is wrong so execute_kw never runs.\n` +
+`  • Authentication — the body sends ODOO_DB, ODOO_UID, and ODOO_PASSWORD into execute_kw; wrong values usually show as access or login errors in Odoo Message/Debug.\n` +
+`TLS — helpers.httpRequest uses the same encrypted transport as other server-side calls in n8n. Cert trust, hostname (SNI), or proxy inspection issues show in Message/Response; fix CA (e.g. NODE_EXTRA_CA_CERTS), DNS, or proxy — not specific to the HTTP Request node.\n` +
+`For diagnosis: copy the full block from this execution log (this node's console.error lines with redacted body + Odoo Message/Debug above) to tell connection vs auth vs validation vs “missing arguments”.`
+);
+}
+
+/** Aggregate-failure “what to check” (includes resolved host/scheme). */
+/** @param {any} config @param {{ scheme: string, host: string }} ep */
+function odooAggregateWhatToCheck(config, ep) {
+return (
+`--- What to check (Odoo + JSON-RPC + this Code node) ---\n` +
+`Target: host=${ep.host} TLS_ON=${ep.tlsOn ? '1' : '0'} | ODOO_DB=${config?.odoo?.db ?? 'n/a'} | ODOO_UID=${config?.odoo?.uid ?? 'n/a'} | ODOO_JOURNAL_ID=${config?.odoo?.journalId ?? 'n/a'}\n` +
+`Endpoint: only path .../jsonrpc (JSON-RPC). Not /web/jsonrpc; wrong path often returns HTML so Odoo never parses the JSON-RPC envelope.\n` +
+`Transport: ${NODE} uses this.helpers.httpRequest inside a Code node, not the HTTP Request node — TLS/proxy/cert rules still apply; errors surface in Message/Response and server logs.\n` +
+`Auth: DB/UID/password must match; Odoo usually states access/login problems in RPC Message/Debug.\n` +
+`Data: journal and account_id lines must exist on that company; validation text is in each move's detail above.\n` +
+`If the symptom is “missing arguments” or similar: compare the Odoo Debug trace with the redacted execute_kw body in console.error — wrong URL/HTML responses are the most common cause of bizarre RPC errors.\n` +
+`Always copy the complete error from the n8n execution log when reporting issues (HTTP status, Response body snippet, Odoo Message/Debug).`
+);
 }
 
 function isDebugEnabled() {
@@ -55,7 +227,7 @@ return { redaction: 'failed' };
 }
 
 /**
-* Best-effort HTTP status aus n8n $http-Fehlern (ähnlich pattern wie zuvor).
+* Best-effort HTTP status aus n8n httpRequest-Fehlern (ähnlich pattern wie zuvor).
 * @param {unknown} e
 */
 function resolveHttpStatus(e) {
@@ -104,7 +276,7 @@ return 'no-status';
 
 /** @param {unknown} e */
 function odooHttpErrorBody(e) {
-// Bei $http steckt der Fehler oft in e.response?.data oder e.body
+// Bei httpRequest steckt der Fehler oft in e.response?.data oder e.body
 let body =
 /** @type {{ response?: { data?: unknown, body?: unknown } }} */ (e)?.response?.data ??
 /** @type {{ response?: { data?: unknown, body?: unknown } }} */ (e)?.response?.body ??
@@ -239,7 +411,7 @@ cooldownMs: parseInt(String($env.ODOO_CB_COOLDOWN_MS || '120000'), 10) || 120000
 });
 
 /**
-* JSON-RPC Aufruf mit $http (n8n built-in).
+* JSON-RPC via this.helpers.httpRequest (json:true), gleiches Muster wie HelloCash Fetch.
 * @param {string} model
 * @param {string} method
 * @param {any[]} args
@@ -279,10 +451,10 @@ body: redactRpcBody(body),
 let response;
 try {
 breaker.assertClosed(`${model}.${method}`);
-// KORREKTUR: $http anstelle von this.helpers.httpRequest
-response = await $http({
+response = await this.helpers.httpRequest({
 method: 'POST',
 url,
+json: true,
 body,
 timeout: 60000,
 headers: { 'Content-Type': 'application/json' },
@@ -290,7 +462,7 @@ headers: { 'Content-Type': 'application/json' },
 breaker.success();
 } catch (e) {
 breaker.failure();
-// $http wirft bei Statuscode >= 400 einen Fehler mit response-Objekt
+// httpRequest wirft bei Statuscode >= 400 oft axios-ähnlich mit response-Objekt
 const status = e.response?.statusCode || e.statusCode || resolveHttpStatus(e);
 const respBody = e.response?.body || e.body || odooHttpErrorBody(e);
 const errMsg = e.message || String(e);
@@ -304,19 +476,32 @@ message: errMsg,
 password: maskSecret(pwd),
 requestBodyRedacted: redactRpcBody(body),
 });
+console.error(
+`N8N_ODPO_HTTP_FAIL_JSON ${JSON.stringify({
+v: 1,
+url,
+model,
+method,
+httpStatus: status,
+message: String(errMsg || '').slice(0, 2000),
+})}`,
+);
 const statusLine =
 status && status !== 'no-status'
 ? `HTTP ${status}`
 : `HTTP status unknown — check ODOO_BASE_URL, TLS, proxy, and that Odoo is reachable`;
 throw new Error(
+scrubHttpTokensForN8nErrorUi(
 `ODOO_URL=${url} | ${statusLine} calling ${model}.${method}\n` +
 `Message: ${errMsg}\n` +
-`Response: ${typeof respBody === 'string' ? respBody : JSON.stringify(respBody)}`,
+`Response: ${typeof respBody === 'string' ? respBody : JSON.stringify(respBody)}` +
+` FULL_URL_GREP_LOG_PREFIX=N8N_ODPO_HTTP_FAIL_JSON` +
+odooRpcTroubleshootingAppendix(),
+),
 );
 }
 
-// KORREKTUR: $http liefert { data, headers, statusCode }, der JSON-RPC response ist in data
-const res = response.data;
+const res = response;
 
 if (res.error) {
 console.error(`${NODE}: Odoo RPC error`, {
@@ -326,11 +511,23 @@ code: res.error.code,
 message: res.error.data?.message ?? res.error.message,
 debug: res.error.data?.debug ?? 'none',
 });
+console.error(
+`N8N_ODPO_RPC_FAIL_JSON ${JSON.stringify({
+v: 1,
+model,
+method,
+code: res.error.code,
+message: String(res.error.data?.message ?? res.error.message ?? '').slice(0, 2000),
+})}`,
+);
 throw new Error(
+scrubHttpTokensForN8nErrorUi(
 `Odoo RPC error calling ${model}.${method}\n` +
 `Code: ${res.error.code}\n` +
 `Message: ${res.error.data?.message ?? res.error.message}\n` +
-`Debug: ${res.error.data?.debug ?? 'none'}`,
+`Debug: ${res.error.data?.debug ?? 'none'}` +
+odooRpcTroubleshootingAppendix(),
+),
 );
 }
 
@@ -451,7 +648,7 @@ const dedupe = await rpcWithRetry(
 `idempotency check ref=${ref}`,
 );
 if (!dedupe.ok) {
-const msg = dedupe.error instanceof Error ? dedupe.error.message : String(dedupe.error);
+const msg = errorToBriefText(dedupe.error);
 results.push({
 json: {
 ...j,
@@ -486,7 +683,7 @@ continue;
 
 const createRes = await rpcWithRetry('account.move', 'create', [[odooVals]], {}, `create ref=${ref}`);
 if (!createRes.ok) {
-const msg = createRes.error instanceof Error ? createRes.error.message : String(createRes.error);
+const msg = errorToBriefText(createRes.error);
 
 // Safety net: post‑failure check
 const postCheck = await rpcWithRetry(
@@ -553,26 +750,91 @@ r.json.reason === 'invalid_payload'),
 );
 
 if (hardFailures.length > 0) {
-const summary = hardFailures.map((r) => ({
-ref: r.json.ref ?? 'unknown',
-reason: r.json.reason ?? 'create_failed',
-error: r.json.error ?? 'unknown error',
-}));
+const summary = hardFailures.map((r) => describeFailedMoveItem(r.json));
+let refsReasons = summary.map((s) => `${s.ref}:${reasonLabelForUi(s.reason)}`).join('; ');
+if (refsReasons.length > 3800) {
+refsReasons = `${refsReasons.slice(0, 3790)}… [truncated ${summary.length} ref(s)]`;
+}
+const odooBaseResolved =
+config?.odoo?.baseUrl != null && String(config.odoo.baseUrl).trim() !== ''
+? String(config.odoo.baseUrl).trim()
+: 'n/a';
+const ep = odooEndpointForErrors(odooBaseResolved);
+const jsonRpcUrl =
+odooBaseResolved !== 'n/a' ? `${odooBaseResolved.replace(/\/+$/, '')}/jsonrpc` : 'n/a';
+
+const headlineOneLine =
+`ODPO_AGG_FAIL ${NODE} movesBad=${hardFailures.length} total=${results.length} host=${ep.host} tls=${ep.tlsOn ? '1' : '0'} ` +
+`db=${config?.odoo?.db ?? 'n/a'} jid=${config?.odoo?.journalId ?? 'n/a'} refs=${refsReasons} ` +
+`FULL_URL_GREP_LOG_LINE_PREFIX=N8N_ODPO_AGG_FAIL_JSON`.replace(/\s+/g, ' ').trim();
+
+const odooTargetBlock =
+`--- Odoo target (ODOO_BASE_URL via Config Loader) ---\n` +
+`  host=${ep.host}  TLS_ON=${ep.tlsOn ? '1' : '0'}  extraPathOnBase=${ep.pathAfterHost === '' ? '(none)' : ep.pathAfterHost}\n` +
+`  ${ep.rpcHostPathForUi}\n` +
+`  ODOO_DB=${config?.odoo?.db ?? 'n/a'}  ODOO_UID=${config?.odoo?.uid ?? 'n/a'}  ODOO_JOURNAL_ID=${config?.odoo?.journalId ?? 'n/a'}\n` +
+`  raw base spelled: ${ep.rawSpelled}\n` +
+`  Exact odoo_base_url and jsonrpc URL are always printed on one Docker line starting with N8N_ODPO_AGG_FAIL_JSON (grep it).`;
+
+console.error(
+`N8N_ODPO_AGG_FAIL_JSON ${JSON.stringify({
+v: 3,
+odooBaseUrl: odooBaseResolved,
+jsonRpcUrl,
+host: ep.host,
+scheme: ep.scheme,
+tlsOn: ep.tlsOn,
+db: config?.odoo?.db,
+uid: config?.odoo?.uid,
+journalId: config?.odoo?.journalId,
+movesFailed: hardFailures.length,
+totalProcessed: results.length,
+failures: summary.map((s) => ({
+ref: s.ref,
+reason: s.reason,
+errorOneLine: String(s.errorOneLine || '').slice(0, 1500),
+})),
+})}`,
+);
+
 console.error(
 `${NODE}: ${hardFailures.length} item(s) failed — throwing so n8n error branch fires error email`,
-{ at: nowIso(), failureCount: hardFailures.length, totalItems: results.length, failures: summary },
+{
+at: nowIso(),
+failureCount: hardFailures.length,
+totalItems: results.length,
+odooScheme: ep.scheme,
+odooHost: ep.host,
+odooBaseResolved,
+rpcHostPathForUi: ep.rpcHostPathForUi,
+jsonRpcUrlOneLine: jsonRpcUrl,
+failures: summary.map((s) => ({ ref: s.ref, reason: s.reason, errorOneLine: s.errorOneLine })),
+},
 );
-const lines = summary
-.map((f) => `  • ref=${f.ref} reason=${f.reason}: ${f.error}`)
-.join('\n');
+
+const blocks = summary.map(
+(s) =>
+`▼ ref=${s.ref}\n` +
+`  reason: ${reasonLabelForUi(s.reason)}\n` +
+`  detail:\n${String(s.errorDetail)
+.split('\n')
+.map((ln) => `    ${ln}`)
+.join('\n')}`,
+);
+
 throw new Error(
-`${NODE}: ${hardFailures.length} of ${results.length} move(s) failed:\n${lines}\n\n` +
-`Check Odoo connectivity, journal config (journalId=${config?.odoo?.journalId}), and the entries above.`,
+scrubHttpTokensForN8nErrorUi(
+`${headlineOneLine}\n\n` +
+`${odooTargetBlock}\n\n` +
+`--- Per-move details (${summary.length}) —\n` +
+`${blocks.join('\n\n')}\n\n` +
+odooAggregateWhatToCheck(config, ep),
+),
 );
 }
 
 return results;
 }
 
-// n8n Code node: return the Promise from run()
-return run();
+// n8n Code node: return the Promise from run() — must preserve this for this.helpers.httpRequest (same as top-level Code).
+return run.call(this);

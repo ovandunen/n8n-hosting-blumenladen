@@ -89,15 +89,162 @@
     },
     {
       "parameters": {
-        "jsCode": "/**\n* Odoo JSON-RPC: account.move create with idempotency (ref) and retries.\n* Uses $env.ODOO_PASSWORD (validated at Config Loader, never stored in config json).\n*\n* KORREKTUREN:\n* 1. Gesamter Hauptcode in async IIFE gepackt, da await nur innerhalb async erlaubt ist.\n* 2. this.helpers.httpRequest durch n8n-eigenes $http ersetzt.\n* 3. $http-Antwort: response.data enthält das JSON-RPC-Ergebnis.\n* 4. Fehlerbehandlung angepasst (statusCode aus $http-Response).\n* 5. Rückgabe des Promise von run() an n8n.\n*/\n\nconst NODE = 'Odoo Post Moves';\n\nfunction safeStringify(v) {\ntry {\nreturn JSON.stringify(v, null, 2);\n} catch {\nreturn '[unserializable]';\n}\n}\n\nfunction isDebugEnabled() {\nconst v = String($env.ODOO_DEBUG_LOG ?? '').trim().toLowerCase();\nreturn v === '1' || v === 'true' || v === 'yes';\n}\n\nfunction debugLog(label, obj) {\ntry {\nconsole.debug(`${NODE}: ${label}`, obj);\n} catch {\n// ignore\n}\n}\n\n/**\n* Redact the password in an execute_kw JSON-RPC body.\n* Body shape:\n* params.args = [db, uid, password, model, method, args, kwargs]\n*/\nfunction redactRpcBody(body) {\ntry {\nconst b = body && typeof body === 'object' ? { ...body } : body;\nif (!b || typeof b !== 'object') return b;\nconst params = b.params && typeof b.params === 'object' ? { ...b.params } : null;\nif (!params) return b;\nconst pArgs = Array.isArray(params.args) ? [...params.args] : null;\nif (!pArgs) return b;\nif (pArgs.length >= 3) pArgs[2] = '***REDACTED***';\nb.params = { ...params, args: pArgs };\nreturn b;\n} catch {\nreturn { redaction: 'failed' };\n}\n}\n\n/**\n* Best-effort HTTP status aus n8n $http-Fehlern (ähnlich pattern wie zuvor).\n* @param {unknown} e\n*/\nfunction resolveHttpStatus(e) {\n/** @param {unknown} x */\nconst asStatus = (x) => {\nif (x === undefined || x === null || x === '') return undefined;\nif (typeof x === 'number' && Number.isFinite(x)) return x;\nconst n = parseInt(String(x), 10);\nif (Number.isFinite(n)) return n;\nif (typeof x === 'string') return x.trim() || undefined;\nreturn undefined;\n};\n\nlet cur = e;\nfor (let d = 0; d < 6 && cur != null; d++) {\nif (typeof cur !== 'object') break;\nconst o = /** @type {Record<string, unknown>} */ (cur);\nconst u =\nasStatus(o.response?.status) ??\nasStatus(o.response?.statusCode) ??\nasStatus(\no.error && typeof o.error === 'object'\n? /** @type {{ status?: unknown, statusCode?: unknown }} */ (o.error).status ??\n/** @type {{ status?: unknown, statusCode?: unknown }} */ (o.error).statusCode ??\nundefined\n: undefined,\n) ??\nasStatus(o.httpCode) ??\nasStatus(o.statusCode) ??\nasStatus(o.status);\nif (u !== undefined) return u;\ncur = o.cause;\n}\n\nconst msg = String(\n(typeof e === 'object' && e && 'message' in e && /** @type {{ message: unknown }} */ (e).message) || '',\n);\nconst m =\nmsg.match(/\\bstatus code\\s+(\\d{3})\\b/i) ??\nmsg.match(/\\bHTTP\\s+(\\d{3})\\b/) ??\nmsg.match(/^\\s*(\\d{3})\\s/);\nif (m) return parseInt(m[1], 10);\n\nreturn 'no-status';\n}\n\n/** @param {unknown} e */\nfunction odooHttpErrorBody(e) {\n// Bei $http steckt der Fehler oft in e.response?.data oder e.body\nlet body =\n/** @type {{ response?: { data?: unknown, body?: unknown } }} */ (e)?.response?.data ??\n/** @type {{ response?: { data?: unknown, body?: unknown } }} */ (e)?.response?.body ??\n/** @type {{ body?: unknown }} */ (e)?.body ??\nnull;\nif ((body === undefined || body === null || body === '') && e && typeof e === 'object' && 'cause' in e) {\nconst c = /** @type {{ cause?: { response?: { data?: unknown, body?: unknown } } }} */ (e).cause;\nbody = c?.response?.data ?? c?.response?.body ?? null;\n}\nif (body === undefined || body === null || body === '') {\nreturn 'no body';\n}\nreturn typeof body === 'string' ? body : JSON.stringify(body, null, 2);\n}\n\nfunction nowIso() {\nreturn new Date().toISOString();\n}\n\n/** Mask secret for logs. */\nfunction maskSecret(s) {\nconst str = String(s ?? '');\nif (!str) return '(empty)';\nif (str.length <= 8) return `${str.slice(0, 2)}…(${str.length} chars)`;\nreturn `${str.slice(0, 3)}…${str.slice(-2)} (len=${str.length})`;\n}\n\n/**\n* Exponential backoff with jitter.\n* @param {number} attempt 1..n\n* @param {number} baseMs\n* @param {number} maxMs\n*/\nfunction backoffDelayMs(attempt, baseMs, maxMs) {\nconst exp = Math.min(maxMs, baseMs * Math.pow(2, Math.max(0, attempt - 1)));\nconst jitter = Math.floor(Math.random() * Math.min(250, exp * 0.1));\nreturn exp + jitter;\n}\n\nfunction createCircuitBreaker({ failureThreshold, cooldownMs }) {\nlet consecutive = 0;\nlet openUntil = 0;\nreturn {\nassertClosed(op) {\nconst now = Date.now();\nif (openUntil && now < openUntil) {\nconst remainingMs = openUntil - now;\nthrow new Error(\n`${NODE}: circuit breaker OPEN for ${op} (cooldown ${Math.ceil(remainingMs / 1000)}s remaining). ` +\n`Too many consecutive failures; check Odoo availability/config before retrying.`,\n);\n}\n},\nsuccess() {\nconsecutive = 0;\nopenUntil = 0;\n},\nfailure() {\nconsecutive++;\nif (consecutive >= failureThreshold) openUntil = Date.now() + cooldownMs;\n},\n};\n}\n\n/**\n* Validate a move payload so we fail fast before sending bad accounting data.\n* @param {any} vals\n*/\nfunction validateMoveVals(vals) {\nif (!vals || typeof vals !== 'object') return 'odooVals must be an object';\nif (!vals.ref || typeof vals.ref !== 'string') return 'odooVals.ref missing (string required)';\nif (!vals.journal_id || !Number.isFinite(parseInt(String(vals.journal_id), 10)))\nreturn 'odooVals.journal_id missing/invalid';\nif (!vals.date || !/^\\d{4}-\\d{2}-\\d{2}$/.test(String(vals.date))) return 'odooVals.date must be YYYY-MM-DD';\nif (!Array.isArray(vals.line_ids) || vals.line_ids.length < 2) return 'odooVals.line_ids must have >= 2 lines';\n\nlet debitSum = 0;\nlet creditSum = 0;\nfor (const li of vals.line_ids) {\nif (!Array.isArray(li) || li.length < 3) return 'odooVals.line_ids must contain [0,0,line] entries';\nconst line = li[2];\nif (!line || typeof line !== 'object') return 'odooVals.line_ids line payload must be object';\nconst acct = line.account_id;\nif (!acct || !Number.isFinite(parseInt(String(acct), 10))) return 'line.account_id missing/invalid';\nconst d = parseFloat(String(line.debit ?? '0'));\nconst c = parseFloat(String(line.credit ?? '0'));\nif (!Number.isFinite(d) || d < 0) return 'line.debit must be a non-negative number';\nif (!Number.isFinite(c) || c < 0) return 'line.credit must be a non-negative number';\ndebitSum += d;\ncreditSum += c;\n}\n// Allow tiny rounding differences.\nif (Math.abs(debitSum - creditSum) > 0.0001) {\nreturn `move not balanced: debit=${debitSum.toFixed(2)} credit=${creditSum.toFixed(2)}`;\n}\nreturn null;\n}\n\n/**\n* Hauptfunktion – wird sofort ausgeführt.\n* @returns {Promise<any[]>} Ergebnisse für n8n\n*/\nasync function run() {\nconst config = $('Config Loader').first().json;\nconst pwd = $env.ODOO_PASSWORD?.trim();\nif (!pwd) {\nthrow new Error(\n`${NODE}: ODOO_PASSWORD missing for JSON-RPC. Example: ODOO_PASSWORD=\"supersecret\" (never log this value).`,\n);\n}\n\nconst { maxAttempts, intervalMs } = config.retry;\nconst results = [];\nconst debug = isDebugEnabled();\n\n// Startup diagnostics (no secrets).\nconsole.log(`${NODE}: start`, {\nat: nowIso(),\nodooBaseUrl: config?.odoo?.baseUrl,\nodooDb: config?.odoo?.db,\nodooUid: config?.odoo?.uid,\njournalId: config?.odoo?.journalId,\npassword: maskSecret(pwd),\nmaxAttempts,\nintervalMs,\ndebug,\n});\n\nconst breaker = createCircuitBreaker({\nfailureThreshold: parseInt(String($env.ODOO_CB_FAILURE_THRESHOLD || '4'), 10) || 4,\ncooldownMs: parseInt(String($env.ODOO_CB_COOLDOWN_MS || '120000'), 10) || 120000,\n});\n\n/**\n* JSON-RPC Aufruf mit $http (n8n built-in).\n* @param {string} model\n* @param {string} method\n* @param {any[]} args\n* @param {Record<string, any>} kwargs\n*/\nconst rpc = async (model, method, args, kwargs = {}) => {\nconst url = `${config.odoo.baseUrl}/jsonrpc`;\nconst body = {\njsonrpc: '2.0',\nmethod: 'call',\nparams: {\nservice: 'object',\nmethod: 'execute_kw',\nargs: [\nconfig.odoo.db,\nconfig.odoo.uid,\nString(pwd).trim(),\nmodel,\nmethod,\nargs,\nkwargs,\n],\n},\nid: Date.now(),\n};\n\nif (debug) {\nconsole.log(`${NODE}: RPC request (redacted)`, {\nat: nowIso(),\nurl,\nmodel,\nmethod,\nbody: redactRpcBody(body),\n});\n}\n\nlet response;\ntry {\nbreaker.assertClosed(`${model}.${method}`);\n// KORREKTUR: $http anstelle von this.helpers.httpRequest\nresponse = await $http({\nmethod: 'POST',\nurl,\nbody,\ntimeout: 60000,\nheaders: { 'Content-Type': 'application/json' },\n});\nbreaker.success();\n} catch (e) {\nbreaker.failure();\n// $http wirft bei Statuscode >= 400 einen Fehler mit response-Objekt\nconst status = e.response?.statusCode || e.statusCode || resolveHttpStatus(e);\nconst respBody = e.response?.body || e.body || odooHttpErrorBody(e);\nconst errMsg = e.message || String(e);\nconsole.error(`${NODE}: Odoo HTTP error — ODOO_URL=${url} (${model}.${method})`, {\nmodel,\nmethod,\nurl,\nhttpStatus: status,\nresponseBody: respBody,\nmessage: errMsg,\npassword: maskSecret(pwd),\nrequestBodyRedacted: redactRpcBody(body),\n});\nconst statusLine =\nstatus && status !== 'no-status'\n? `HTTP ${status}`\n: `HTTP status unknown — check ODOO_BASE_URL, TLS, proxy, and that Odoo is reachable`;\nthrow new Error(\n`ODOO_URL=${url} | ${statusLine} calling ${model}.${method}\\n` +\n`Message: ${errMsg}\\n` +\n`Response: ${typeof respBody === 'string' ? respBody : JSON.stringify(respBody)}`,\n);\n}\n\n// KORREKTUR: $http liefert { data, headers, statusCode }, der JSON-RPC response ist in data\nconst res = response.data;\n\nif (res.error) {\nconsole.error(`${NODE}: Odoo RPC error`, {\nmodel,\nmethod,\ncode: res.error.code,\nmessage: res.error.data?.message ?? res.error.message,\ndebug: res.error.data?.debug ?? 'none',\n});\nthrow new Error(\n`Odoo RPC error calling ${model}.${method}\\n` +\n`Code: ${res.error.code}\\n` +\n`Message: ${res.error.data?.message ?? res.error.message}\\n` +\n`Debug: ${res.error.data?.debug ?? 'none'}`,\n);\n}\n\nconsole.log(`${NODE}: Odoo RPC ok: ${model}.${method}`, {\nresultType: Array.isArray(res.result) ? 'array' : typeof res.result,\nresultLength: Array.isArray(res.result) ? res.result.length : undefined,\n});\n\nreturn res.result;\n};\n\n/**\n* RPC with retries/backoff.\n* @param {string} model\n* @param {string} method\n* @param {any[]} args\n* @param {Record<string, any>} kwargs\n* @param {string} op\n*/\nconst rpcWithRetry = async (model, method, args, kwargs, op) => {\nlet last = null;\nfor (let attempt = 1; attempt <= maxAttempts; attempt++) {\ntry {\nreturn { ok: true, result: await rpc(model, method, args, kwargs), attempt };\n} catch (e) {\nlast = e;\nconst error = e instanceof Error ? e : new Error(String(e));\n// Fehler mit Stacktrace\nconsole.error(`${NODE}: Fehler`, error.stack);\nconst msg = e instanceof Error ? e.message : String(e);\nconsole.warn(`${NODE}: ${op} failed (attempt ${attempt}/${maxAttempts}): ${msg}`);\nif (attempt < maxAttempts) {\nconst delay = backoffDelayMs(attempt, intervalMs, 30000);\n// Mehrere Werte in einem Objekt\ndebugLog('Zwischenstand', { ref: kwargs?.ref ?? undefined, attempt, delayMs: delay });\nawait new Promise((r) => setTimeout(r, delay));\n}\n}\n}\nreturn { ok: false, error: last };\n};\n\n// Hauptschleife über alle eingehenden Items\nfor (const item of items) {\nconst j = item.json;\n\nif (j.skipped || j.empty || j.mappedEmpty) {\nresults.push({ json: { ...j, odooSkipped: true, reason: 'no_data' } });\ncontinue;\n}\n\nif (!j.odooVals?.ref) {\nresults.push({ json: { ...j, error: 'Missing odooVals.ref' } });\ncontinue;\n}\n\nconst { hellocashId, hellocashNumber, invoiceNumber, ref, odooVals, paymentMethod, taxRate } = j;\n\nconsole.log(`${NODE}: processing item ${ref}`, { hellocashId, ref, at: nowIso() });\n\nconst validationError = validateMoveVals(odooVals);\nif (validationError) {\nresults.push({\njson: {\n...j,\nsuccess: false,\nerror: `Invalid journal entry payload: ${validationError}`,\nodooSkipped: true,\nreason: 'invalid_payload',\n},\n});\ncontinue;\n}\n\n// Log what we are about to send (safe summary by default).\nconst lineCount = Array.isArray(odooVals?.line_ids) ? odooVals.line_ids.length : 0;\nlet debitSum = 0;\nlet creditSum = 0;\ntry {\nif (Array.isArray(odooVals?.line_ids)) {\nfor (const li of odooVals.line_ids) {\nconst line = Array.isArray(li) ? li[2] : null;\nif (!line || typeof line !== 'object') continue;\nconst d = parseFloat(String(line.debit ?? '0'));\nconst c = parseFloat(String(line.credit ?? '0'));\nif (Number.isFinite(d)) debitSum += d;\nif (Number.isFinite(c)) creditSum += c;\n}\n}\n} catch {}\n\nconsole.log(`${NODE}: odoo payload summary`, {\nat: nowIso(),\nref,\ndate: odooVals?.date,\njournal_id: odooVals?.journal_id,\nlineCount,\ndebitSum: Number.isFinite(debitSum) ? Number(debitSum.toFixed(2)) : null,\ncreditSum: Number.isFinite(creditSum) ? Number(creditSum.toFixed(2)) : null,\n});\n\nif (debug) {\nconsole.log(`${NODE}: odoo payload FULL (create)`, {\nat: nowIso(),\nref,\nodooVals,\n});\n// Ausgabe von Variablen als lesbares JSON\nconsole.log(`${NODE}: Debug odooVals`, JSON.stringify(odooVals, null, 2));\n}\n\n// Idempotency check\nconst dedupe = await rpcWithRetry(\n'account.move',\n'search_read',\n[[['ref', '=', ref]]],\n{ fields: ['id', 'state', 'name', 'ref'], limit: 1 },\n`idempotency check ref=${ref}`,\n);\nif (!dedupe.ok) {\nconst msg = dedupe.error instanceof Error ? dedupe.error.message : String(dedupe.error);\nresults.push({\njson: {\n...j,\nsuccess: false,\nerror:\n`Idempotency check failed — move not created to avoid duplicates. ` +\n`Fix Odoo connectivity and re-run. Details: ${msg}`,\nodooSkipped: true,\nreason: 'dedupe_check_failed',\n},\n});\ncontinue;\n}\nconst existing = dedupe.result;\nif (Array.isArray(existing) && existing.length > 0) {\nconsole.log(`${NODE}: skipping duplicate: ${ref}`, { odooMoveId: existing[0].id });\nresults.push({\njson: {\nhellocashId,\nhellocashNumber,\ninvoiceNumber,\nref,\nodooMoveId: existing[0].id,\nodooState: existing[0].state,\nsuccess: true,\nidempotent: true,\nmessage: `Already exists as ${existing[0].name || ref}`,\n},\n});\ncontinue;\n}\n\nconst createRes = await rpcWithRetry('account.move', 'create', [[odooVals]], {}, `create ref=${ref}`);\nif (!createRes.ok) {\nconst msg = createRes.error instanceof Error ? createRes.error.message : String(createRes.error);\n\n// Safety net: post‑failure check\nconst postCheck = await rpcWithRetry(\n'account.move',\n'search_read',\n[[['ref', '=', ref]]],\n{ fields: ['id', 'state', 'name'], limit: 1 },\n`post-failure dedupe check ref=${ref}`,\n);\nif (postCheck.ok && Array.isArray(postCheck.result) && postCheck.result.length > 0) {\nresults.push({\njson: {\nhellocashId,\nhellocashNumber,\ninvoiceNumber,\nref,\nodooMoveId: postCheck.result[0].id,\nodooState: postCheck.result[0].state,\nsuccess: true,\nidempotent: true,\nmessage: `Move appears to have been created despite error; found as ${postCheck.result[0].name || ref}`,\n},\n});\ncontinue;\n}\n\nresults.push({\njson: {\n...j,\nsuccess: false,\nerror: `Failed to create move after ${maxAttempts} attempts: ${msg}`,\nodooSkipped: false,\nreason: 'create_failed',\n},\n});\ncontinue;\n}\n\nconst createdId = Array.isArray(createRes.result) ? createRes.result[0] : createRes.result;\nconsole.log(`${NODE}: created Odoo move for ${ref}`, { odooMoveId: createdId });\nresults.push({\njson: {\nhellocashId,\nhellocashNumber,\ninvoiceNumber,\nref,\nodooMoveId: createdId,\npaymentMethod,\ntaxRate,\nsuccess: true,\nattempt: createRes.attempt,\ncreatedAt: nowIso(),\n},\n});\n}\n\nreturn results;\n}\n\n// n8n Code node: return the Promise from run()\nreturn run();\n"
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": ""
       },
-      "id": "847857b7-30d8-46e8-ad53-80e1cd04a252",
-      "name": "Odoo Post Moves",
+      "id": "f1a9c2e0-4d3b-4c8a-ad10-000000000001",
+      "name": "Odoo Prepare Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "b2222222-2222-4222-8222-222222222222",
+              "leftValue": "={{ $json.dedupeBody != null || $json.dedupeJson2Body != null || $json.dedupeUrl != null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f1a9c2e0-4d3b-4c8a-ad10-000000000002",
+      "name": "Odoo Has Rpc Work?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1500,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": ""
+      },
+      "id": "f1a9c2e0-4d3b-4c8a-ad10-000000000003",
+      "name": "Odoo Pass Through Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": ""
+      },
+      "id": "f1a9c2e0-4d3b-4c8a-ad10-000000000004",
+      "name": "Odoo Dedupe Check",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "onError": "continueErrorOutput",
       "position": [
-        1500,
+        1660,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c3333333-3333-4333-8333-333333333333",
+              "leftValue": "={{ !$json.skip && !$json.dedupeRpc?.error && Array.isArray($json.dedupeRpc?.result) && $json.dedupeRpc.result.length === 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f1a9c2e0-4d3b-4c8a-ad10-000000000006",
+      "name": "Odoo Need Create Move?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": ""
+      },
+      "id": "f1a9c2e0-4d3b-4c8a-ad10-000000000007",
+      "name": "Odoo Create Move",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueErrorOutput",
+      "position": [
+        2140,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": ""
+      },
+      "id": "f1a9c2e0-4d3b-4c8a-ad10-000000000009",
+      "name": "Odoo Skip Create Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2140,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": ""
+      },
+      "id": "f1a9c2e0-4d3b-4c8a-ad10-00000000000a",
+      "name": "Odoo Process Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueErrorOutput",
+      "position": [
+        2460,
         120
       ]
     },
@@ -196,14 +343,105 @@
         [],
         [
           {
-            "node": "Odoo Post Moves",
+            "node": "Odoo Prepare Payload",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Odoo Post Moves": {
+    "Odoo Prepare Payload": {
+      "main": [
+        [
+          {
+            "node": "Odoo Has Rpc Work?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odoo Has Rpc Work?": {
+      "main": [
+        [
+          {
+            "node": "Odoo Dedupe Check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Odoo Pass Through Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odoo Pass Through Skipped": {
+      "main": [
+        [
+          {
+            "node": "Odoo Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odoo Dedupe Check": {
+      "main": [
+        [
+          {
+            "node": "Odoo Need Create Move?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odoo Need Create Move?": {
+      "main": [
+        [
+          {
+            "node": "Odoo Create Move",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Odoo Skip Create Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odoo Create Move": {
+      "main": [
+        [
+          {
+            "node": "Odoo Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odoo Skip Create Row": {
+      "main": [
+        [
+          {
+            "node": "Odoo Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odoo Process Results": {
       "main": [
         [
           {

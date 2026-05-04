@@ -34,6 +34,7 @@ export function sampleConfigJson() {
     odoo: {
       baseUrl: 'https://odoo.example.com',
       db: 'testdb',
+      rpc: 'jsonrpc',
       uid: 2,
       journalId: 1,
     },
