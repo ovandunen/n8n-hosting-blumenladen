@@ -4,6 +4,23 @@ Option B layout: **graph + wiring** live in `src/workflow-template.json`; **Code
 
 > **Do not run** the built JSON with `node …` — it is for **n8n import only**. Use **`npm run validate:workflow`** after a build to sanity-check JSON.
 
+## Changelog (major vs minor)
+
+Use this as a high-level release note for operators and reviewers. For exact behaviour, treat **`src/nodes/*.js`** and the built workflow JSON as the source of truth.
+
+### Major (behaviour / integration)
+
+- **HelloCash → Odoo journal entries**: two-phase HelloCash fetch (cashbook + invoices), mapping to `account.move` payloads, then **Odoo JSON-RPC** `search_read` (idempotency on `ref`) and `create`.
+- **Operational safety on HelloCash HTTP**: retries with backoff, optional circuit breaker, richer **attempt history / diagnostics** on terminal failure (masked token, URL, status, body snippet).
+- **Odoo write path**: validates `odooVals` before RPC; on create failure, a **post-failure `search_read`** reduces duplicate risk when Odoo accepted the write but the client errored.
+
+### Minor (quality / ops)
+
+- **HelloCash URL joining** tolerates `HELLOCASH_BASE_URL` with or without overlapping `/api/v1` path segments.
+- **Invoice enrichment**: supports split payments when invoice detail objects expose multiple payment lines; still maps **7% / 19%** Odoo taxes (HelloCash **20%** maps to the **19%** tax id).
+- **Odoo RPC logging**: optional verbose payload logging via **`ODOO_DEBUG_LOG`** (password remains redacted in logged RPC bodies).
+- **Workflow packaging**: `scripts/build.mjs` injects Code node sources into `src/workflow-template.json`; `scripts/validate-workflow.mjs` checks export-shaped JSON.
+
 ## Layout
 
 | Path | Role |
@@ -74,11 +91,13 @@ Code nodes run via `tests/harness.mjs` with mocked `$env`, `$('Config Loader')`,
 
 ---
 
-scripts/
-├── build.js          ← injects src/nodes/* into workflow template
-├── deploy.sh         ← pushes build/ to n8n via API
-├── export.sh         ← pulls from n8n, extracts code back to src/nodes/
-└── sanitize-workflow.js   ← strips credential IDs and instance-specific fields
+`scripts/` (this package)
+
+- `build.mjs` — merge template + `src/nodes` → `build/helloCash-odoo-sync_workflow.json`
+- `validate-workflow.mjs` — structural checks on the built JSON
+- `sanitize-workflow.mjs` — strip credential IDs / instance-only fields from an export
+- `deploy.sh` — push `build/` to n8n via API (`N8N_BASE_URL`, `N8N_API_KEY`, optional `N8N_WORKFLOW_ID`)
+- `export.sh` — stub for future pull-from-n8n automation
 
 ## Still to implement or verify
 
@@ -136,3 +155,14 @@ flowchart LR
 Required: see `env/.env.example` and `src/nodes/01-config-loader.js`.
 
 Optional: `HELLOCASH_LIST_PATH`, `HELLOCASH_INVOICES_PATH`, `HELLOCASH_QUERY_FROM`/`TO`, `HELLOCASH_CASHBOOK_*`, `HELLOCASH_INVOICES_*`, `HELLOCASH_IGNORE_SYNC_HOUR`, `ERROR_EMAIL_FROM`.
+
+# Deployment
+
+./deploy-n8n-odoo-sync.sh deploy      # Full deployment
+./deploy-n8n-odoo-sync.sh configure  # Fetch Odoo config only
+./deploy-n8n-odoo-sync.sh start       # Start stack
+./deploy-n8n-odoo-sync.sh stop        # Stop stack
+./deploy-n8n-odoo-sync.sh logs        # View logs
+./deploy-n8n-odoo-sync.sh backup      # Backup data
+./deploy-n8n-odoo-sync.sh restore     # Restore from backup
+./deploy-n8n-odoo-sync.sh destroy     # Remove everything
