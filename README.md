@@ -30,8 +30,9 @@ See [`kubernetes/`](./kubernetes/) for raw Kubernetes manifest examples used in 
 - [n8n docs](https://docs.n8n.io/)
 - [Self-hosting guides](https://docs.n8n.io/hosting/)
 - [Community forum](https://community.n8n.io/)
+- [HelloCash → Odoo workflow changelog](./workflows/helloCash-odoo-sync/README.md#changelog-major-vs-minor) (major/minor behaviour notes)
 
-creates a connection between Odoo and HelloCash
+This repository also includes a **HelloCash Business → Odoo** workflow under `workflows/helloCash-odoo-sync/`.
 
 ## Deployment
 
