@@ -1,12 +1,12 @@
 /**
 * Odoo JSON-RPC: account.move create with idempotency (ref) and retries.
-* Uses $env.ODOO_PASSWORD (validated at Config Loader, never stored in config json).
+* Uses $env.ODOO_API_KEY (validated at Config Loader, never stored in config json).
 *
 * KORREKTUREN:
-* 1. Gesamter Hauptcode in async IIFE gepackt, da await nur innerhalb async erlaubt ist.
-* 2. this.helpers.httpRequest durch n8n-eigenes $http ersetzt.
-* 3. $http-Antwort: response.data enthält das JSON-RPC-Ergebnis.
-* 4. Fehlerbehandlung angepasst (statusCode aus $http-Response).
+* 1. Hauptlogik als async Arrow-Funktion `run`, damit `this` vom Code-Node-Sandbox erhalten bleibt.
+* 2. JSON-RPC über this.helpers.httpRequest (Code-Node v2; $http ist hier nicht verfügbar).
+* 3. httpRequest mit json:true liefert das geparste JSON-RPC-Objekt direkt (kein response.data).
+* 4. Fehler: response.status / statusCode (axios-ähnlich), Transport-Diagnostik bei leerem Body.
 * 5. Rückgabe des Promise von run() an n8n.
 */
 
@@ -23,6 +23,98 @@ return '[unserializable]';
 function isDebugEnabled() {
 const v = String($env.ODOO_DEBUG_LOG ?? '').trim().toLowerCase();
 return v === '1' || v === 'true' || v === 'yes';
+}
+
+/** Max chars for error response/debug snippets in messages and logs (avoid single-line truncation in Docker). */
+function errorSnippetLimit() {
+const raw = String($env.ODOO_ERROR_SNIPPET_CHARS ?? '').trim();
+const n = parseInt(raw, 10);
+if (Number.isFinite(n) && n > 0) return Math.min(n, 200000);
+return 8000;
+}
+
+/**
+* Split a long string into log-sized chunks so each docker/n8n log line stays complete.
+* @param {string} text
+* @param {number} chunkSize
+* @returns {string[]}
+*/
+function chunkForLogs(text, chunkSize = 3500) {
+const s = String(text ?? '');
+if (!s) return ['(empty)'];
+const out = [];
+for (let i = 0; i < s.length; i += chunkSize) {
+out.push(s.slice(i, i + chunkSize));
+}
+return out;
+}
+
+/**
+* Walk Error.cause (and plain { cause }) chains for fuller diagnostics.
+* @param {unknown} e
+* @returns {unknown[]}
+*/
+function walkCauses(e) {
+const list = [];
+let cur = e;
+for (let depth = 0; depth < 10 && cur != null; depth++) {
+list.push(cur);
+if (cur instanceof Error && cur.cause !== undefined) {
+cur = cur.cause;
+} else if (typeof cur === 'object' && cur !== null && 'cause' in cur) {
+cur = /** @type {{ cause?: unknown }} */ (cur).cause;
+} else {
+break;
+}
+}
+return list;
+}
+
+/**
+* Verbose multi-line stderr — avoids one huge line that gets truncated as `error | Cannot ` in docker.
+* @param {string} context
+* @param {unknown} e
+* @param {Record<string, unknown>} [extra]
+*/
+function logErrorVerbose(context, e, extra = {}) {
+const lim = errorSnippetLimit();
+console.error(`${NODE}: ERROR [${context}]`);
+try {
+console.error(`${NODE}: ERROR [${context}] extra`, extra);
+} catch {
+// ignore
+}
+let idx = 0;
+for (const cur of walkCauses(e)) {
+const tag = idx === 0 ? 'root' : `cause[${idx}]`;
+idx++;
+if (cur instanceof Error) {
+console.error(`${NODE}: ERROR [${context}] ${tag} name=${cur.name} message=${cur.message}`);
+if (cur.stack) {
+for (const line of chunkForLogs(cur.stack, 3500)) {
+console.error(`${NODE}: ERROR [${context}] ${tag} stack`, line);
+}
+}
+} else {
+console.error(`${NODE}: ERROR [${context}] ${tag} (non-Error)`, safeStringify(cur).slice(0, lim));
+}
+}
+const any = /** @type {{ response?: { statusCode?: unknown, status?: unknown, body?: unknown, data?: unknown } }} */ (e);
+const st = any?.response?.statusCode ?? any?.response?.status;
+const bod =
+any?.response?.data ?? any?.response?.body ?? /** @type {{ body?: unknown }} */ (e)?.body;
+if (st !== undefined || bod !== undefined) {
+const bodyStr =
+typeof bod === 'string' ? bod : bod !== undefined && bod !== null ? safeStringify(bod) : '';
+console.error(`${NODE}: ERROR [${context}] httpSummary`, {
+httpStatus: st,
+bodySnippetChars: Math.min(bodyStr.length, lim),
+});
+const parts = chunkForLogs(bodyStr.slice(0, lim), 3500);
+parts.forEach((part, c) => {
+console.error(`${NODE}: ERROR [${context}] body part ${c + 1}/${parts.length}`, part);
+});
+}
 }
 
 function debugLog(label, obj) {
@@ -55,7 +147,7 @@ return { redaction: 'failed' };
 }
 
 /**
-* Best-effort HTTP status aus n8n $http-Fehlern (ähnlich pattern wie zuvor).
+* Best-effort HTTP status aus httpRequest/axios-ähnlichen Fehlern.
 * @param {unknown} e
 */
 function resolveHttpStatus(e) {
@@ -102,22 +194,56 @@ if (m) return parseInt(m[1], 10);
 return 'no-status';
 }
 
-/** @param {unknown} e */
-function odooHttpErrorBody(e) {
-// Bei $http steckt der Fehler oft in e.response?.data oder e.body
+/**
+* Best-effort HTTP error payload text (Odoo often returns JSON in body on 4xx/5xx).
+* @param {unknown} e
+* @returns {string | undefined} undefined if nothing readable (network/TLS/DNS errors often have no body)
+*/
+function extractHttpErrorPayload(e) {
 let body =
 /** @type {{ response?: { data?: unknown, body?: unknown } }} */ (e)?.response?.data ??
 /** @type {{ response?: { data?: unknown, body?: unknown } }} */ (e)?.response?.body ??
 /** @type {{ body?: unknown }} */ (e)?.body ??
 null;
 if ((body === undefined || body === null || body === '') && e && typeof e === 'object' && 'cause' in e) {
-const c = /** @type {{ cause?: { response?: { data?: unknown, body?: unknown } } }} */ (e).cause;
-body = c?.response?.data ?? c?.response?.body ?? null;
+let cur = /** @type {{ cause?: unknown }} */ (e).cause;
+for (let d = 0; d < 6 && cur != null; d++) {
+if (typeof cur === 'object' && cur !== null) {
+const c = /** @type {{ response?: { data?: unknown, body?: unknown } } } */ (cur);
+body = c.response?.data ?? c.response?.body ?? null;
+if (body !== undefined && body !== null && body !== '') break;
+cur = 'cause' in cur ? /** @type {{ cause?: unknown }} */ (cur).cause : null;
+} else break;
 }
-if (body === undefined || body === null || body === '') {
-return 'no body';
 }
+if (body === undefined || body === null || body === '') return undefined;
 return typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+}
+
+/**
+* Syserror fields when there is no HTTP body (ECONNREFUSED, ENOTFOUND, cert, etc.).
+* @param {unknown} e
+*/
+function transportDiagnostics(e) {
+const parts = [];
+const seen = new Set();
+const add = (p) => {
+if (!p || seen.has(p)) return;
+seen.add(p);
+parts.push(p);
+};
+const visit = (o) => {
+if (!o || typeof o !== 'object') return;
+const x = /** @type {Record<string, unknown>} */ (o);
+if (typeof x.code === 'string' && x.code) add(`code=${x.code}`);
+if (x.errno != null && x.errno !== '') add(`errno=${x.errno}`);
+if (typeof x.syscall === 'string' && x.syscall) add(`syscall=${x.syscall}`);
+if (typeof x.hostname === 'string' && x.hostname) add(`host=${x.hostname}`);
+if (x.address != null && x.address !== '') add(`address=${String(x.address)}`);
+if (x.port != null && x.port !== '') add(`port=${String(x.port)}`);
+};
+for (const cur of walkCauses(e)) visit(cur);
+return parts.join(' ');
 }
 
 function nowIso() {
@@ -204,15 +330,15 @@ return null;
 }
 
 /**
-* Hauptfunktion – wird sofort ausgeführt.
+* Hauptfunktion – Arrow, damit this.helpers beim Aufruf `return run()` gesetzt bleibt.
 * @returns {Promise<any[]>} Ergebnisse für n8n
 */
-async function run() {
+const run = async () => {
 const config = $('Config Loader').first().json;
-const pwd = $env.ODOO_PASSWORD?.trim();
-if (!pwd) {
+const apiKey = $env.ODOO_API_KEY?.trim();
+if (!apiKey) {
 throw new Error(
-`${NODE}: ODOO_PASSWORD missing for JSON-RPC. Example: ODOO_PASSWORD="supersecret" (never log this value).`,
+`${NODE}: ODOO_API_KEY missing for JSON-RPC. Example: ODOO_API_KEY="supersecret" (never log this value).`,
 );
 }
 
@@ -227,7 +353,7 @@ odooBaseUrl: config?.odoo?.baseUrl,
 odooDb: config?.odoo?.db,
 odooUid: config?.odoo?.uid,
 journalId: config?.odoo?.journalId,
-password: maskSecret(pwd),
+apiKey: maskSecret(apiKey),
 maxAttempts,
 intervalMs,
 debug,
@@ -239,13 +365,14 @@ cooldownMs: parseInt(String($env.ODOO_CB_COOLDOWN_MS || '120000'), 10) || 120000
 });
 
 /**
-* JSON-RPC Aufruf mit $http (n8n built-in).
+* JSON-RPC Aufruf mit this.helpers.httpRequest.
 * @param {string} model
 * @param {string} method
 * @param {any[]} args
 * @param {Record<string, any>} kwargs
+* @param {number} rpcAttempt 1..maxAttempts (verbose logs only on final attempt)
 */
-const rpc = async (model, method, args, kwargs = {}) => {
+const rpc = async (model, method, args, kwargs = {}, rpcAttempt = 1) => {
 const url = `${config.odoo.baseUrl}/jsonrpc`;
 const body = {
 jsonrpc: '2.0',
@@ -256,7 +383,7 @@ method: 'execute_kw',
 args: [
 config.odoo.db,
 config.odoo.uid,
-String(pwd).trim(),
+String(apiKey).trim(),
 model,
 method,
 args,
@@ -276,61 +403,95 @@ body: redactRpcBody(body),
 });
 }
 
-let response;
+let res;
 try {
 breaker.assertClosed(`${model}.${method}`);
-// KORREKTUR: $http anstelle von this.helpers.httpRequest
-response = await $http({
+res = await this.helpers.httpRequest({
 method: 'POST',
 url,
 body,
+json: true,
 timeout: 60000,
 headers: { 'Content-Type': 'application/json' },
 });
 breaker.success();
 } catch (e) {
 breaker.failure();
-// $http wirft bei Statuscode >= 400 einen Fehler mit response-Objekt
-const status = e.response?.statusCode || e.statusCode || resolveHttpStatus(e);
-const respBody = e.response?.body || e.body || odooHttpErrorBody(e);
+// axios-ähnlich: response.status; manche Versionen: statusCode
+const status =
+e.response?.status ?? e.response?.statusCode ?? e.statusCode ?? resolveHttpStatus(e);
 const errMsg = e.message || String(e);
-console.error(`${NODE}: Odoo HTTP error — ODOO_URL=${url} (${model}.${method})`, {
+const lim = errorSnippetLimit();
+const directBody = e.response?.data ?? e.response?.body ?? e.body;
+const payloadText =
+directBody !== undefined && directBody !== null && directBody !== ''
+? typeof directBody === 'string'
+? directBody
+: JSON.stringify(directBody, null, 2)
+: extractHttpErrorPayload(e);
+const transport = transportDiagnostics(e);
+const responseSummary =
+payloadText !== undefined
+? String(payloadText).slice(0, lim)
+: transport
+? `(no HTTP response body; ${transport})`
+: `(no HTTP response body — typical for ECONNREFUSED/ENOTFOUND/ETIMEDOUT/TLS/DNS; primary error: ${errMsg})`;
+if (rpcAttempt === maxAttempts) {
+logErrorVerbose(`rpc HTTP ${model}.${method}`, e, {
+url,
 model,
 method,
-url,
 httpStatus: status,
-responseBody: respBody,
 message: errMsg,
-password: maskSecret(pwd),
+transport,
+payloadSnippet: payloadText ? String(payloadText).slice(0, 2000) : undefined,
+apiKey: maskSecret(apiKey),
 requestBodyRedacted: redactRpcBody(body),
 });
+} else {
+console.error(`${NODE}: Odoo HTTP error (will retry ${rpcAttempt}/${maxAttempts})`, {
+url,
+model,
+method,
+httpStatus: status,
+message: errMsg,
+transport,
+requestBodyRedacted: redactRpcBody(body),
+});
+}
 const statusLine =
 status && status !== 'no-status'
 ? `HTTP ${status}`
 : `HTTP status unknown — check ODOO_BASE_URL, TLS, proxy, and that Odoo is reachable`;
 throw new Error(
-`ODOO_URL=${url} | ${statusLine} calling ${model}.${method}\n` +
-`Message: ${errMsg}\n` +
-`Response: ${typeof respBody === 'string' ? respBody : JSON.stringify(respBody)}`,
+`${errMsg} | ${statusLine} | ${model}.${method} | ${responseSummary}`,
 );
 }
 
-// KORREKTUR: $http liefert { data, headers, statusCode }, der JSON-RPC response ist in data
-const res = response.data;
-
 if (res.error) {
+const dbg = String(res.error.data?.debug ?? res.error.message ?? 'none');
+const msg = String(res.error.data?.message ?? res.error.message ?? '');
+const lim = errorSnippetLimit();
+if (rpcAttempt === maxAttempts) {
 console.error(`${NODE}: Odoo RPC error`, {
 model,
 method,
 code: res.error.code,
-message: res.error.data?.message ?? res.error.message,
-debug: res.error.data?.debug ?? 'none',
+message: msg,
 });
+for (const part of chunkForLogs(dbg, 3500)) {
+console.error(`${NODE}: Odoo RPC error debug chunk`, part);
+}
+} else {
+console.error(`${NODE}: Odoo RPC error (retry ${rpcAttempt}/${maxAttempts})`, {
+model,
+method,
+code: res.error.code,
+message: msg,
+});
+}
 throw new Error(
-`Odoo RPC error calling ${model}.${method}\n` +
-`Code: ${res.error.code}\n` +
-`Message: ${res.error.data?.message ?? res.error.message}\n` +
-`Debug: ${res.error.data?.debug ?? 'none'}`,
+`Odoo RPC | ${model}.${method} | code=${res.error.code} | ${msg} | debug:${dbg.slice(0, lim)}`,
 );
 }
 
@@ -354,12 +515,9 @@ const rpcWithRetry = async (model, method, args, kwargs, op) => {
 let last = null;
 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 try {
-return { ok: true, result: await rpc(model, method, args, kwargs), attempt };
+return { ok: true, result: await rpc(model, method, args, kwargs, attempt), attempt };
 } catch (e) {
 last = e;
-const error = e instanceof Error ? e : new Error(String(e));
-// Fehler mit Stacktrace
-console.error(`${NODE}: Fehler`, error.stack);
 const msg = e instanceof Error ? e.message : String(e);
 console.warn(`${NODE}: ${op} failed (attempt ${attempt}/${maxAttempts}): ${msg}`);
 if (attempt < maxAttempts) {
@@ -558,21 +716,30 @@ ref: r.json.ref ?? 'unknown',
 reason: r.json.reason ?? 'create_failed',
 error: r.json.error ?? 'unknown error',
 }));
+console.error(`${NODE}: batch failure summary`, {
+at: nowIso(),
+failureCount: hardFailures.length,
+totalItems: results.length,
+odooBaseUrl: config?.odoo?.baseUrl,
+journalId: config?.odoo?.journalId,
+});
+for (let i = 0; i < summary.length; i++) {
+const f = summary[i];
 console.error(
-`${NODE}: ${hardFailures.length} item(s) failed — throwing so n8n error branch fires error email`,
-{ at: nowIso(), failureCount: hardFailures.length, totalItems: results.length, failures: summary },
+`${NODE}: failure ${i + 1}/${summary.length} ref=${f.ref} reason=${f.reason}`,
 );
-const lines = summary
-.map((f) => `  • ref=${f.ref} reason=${f.reason}: ${f.error}`)
-.join('\n');
+for (const part of chunkForLogs(String(f.error ?? ''), 3500)) {
+console.error(`${NODE}: failure ${i + 1} detail`, part);
+}
+}
+const first = summary[0];
 throw new Error(
-`${NODE}: ${hardFailures.length} of ${results.length} move(s) failed:\n${lines}\n\n` +
-`Check Odoo connectivity, journal config (journalId=${config?.odoo?.journalId}), and the entries above.`,
+`${NODE}: ${hardFailures.length} item(s) failed (full details in logs above). First: ref=${first?.ref} reason=${first?.reason} — ${String(first?.error ?? '').slice(0, 500)}`,
 );
 }
 
 return results;
-}
+};
 
 // n8n Code node: return the Promise from run()
 return run();

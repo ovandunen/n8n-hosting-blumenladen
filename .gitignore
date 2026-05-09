@@ -5,3 +5,4 @@ docker-compose/withPostgres/.env
 docker-compose/withPostgres/.env.bak
 credentials
 .env?*
+*.swp

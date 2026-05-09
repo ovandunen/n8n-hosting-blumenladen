@@ -30,7 +30,7 @@ test('Odoo Post Moves: creates move when search_read returns empty', async () =>
   let createCalls = 0;
 
   const out = await runAsyncCodeNode('04-odoo-post-moves.js', {
-    $env: { ODOO_PASSWORD: 'secret' },
+    $env: { ODOO_API_KEY: 'secret' },
     $: mockConfigLoader$(sampleConfigJson()),
     items: [{ json: mappedItem }],
     self: {
@@ -60,7 +60,7 @@ test('Odoo Post Moves: creates move when search_read returns empty', async () =>
 
 test('Odoo Post Moves: skips when mappedEmpty', async () => {
   const out = await runAsyncCodeNode('04-odoo-post-moves.js', {
-    $env: { ODOO_PASSWORD: 'secret' },
+    $env: { ODOO_API_KEY: 'secret' },
     $: mockConfigLoader$(sampleConfigJson()),
     items: [{ json: { mappedEmpty: true } }],
     self: {
@@ -74,7 +74,7 @@ test('Odoo Post Moves: skips when mappedEmpty', async () => {
   assert.equal(out[0].json.odooSkipped, true);
 });
 
-test('Odoo Post Moves: throws if ODOO_PASSWORD missing', async () => {
+test('Odoo Post Moves: throws if ODOO_API_KEY missing', async () => {
   await assert.rejects(
     async () =>
       runAsyncCodeNode('04-odoo-post-moves.js', {
@@ -83,6 +83,6 @@ test('Odoo Post Moves: throws if ODOO_PASSWORD missing', async () => {
         items: [{ json: { odooVals: { ref: 'x' } } }],
         self: { helpers: { httpRequest: async () => ({}) } },
       }),
-    /ODOO_PASSWORD/,
+    /ODOO_API_KEY/,
   );
 });

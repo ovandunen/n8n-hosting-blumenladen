@@ -44,7 +44,7 @@ The n8n container **cannot** reach Odoo at `http://localhost:8069` — `localhos
 - Set **`ODOO_BASE_URL=http://host.docker.internal:8069`** (origin only, no `/jsonrpc`; the workflow adds `/jsonrpc`).
 - The compose file adds `extra_hosts: host.docker.internal:host-gateway` so this resolves on Linux and Mac/Windows Docker.
 - If Odoo runs on another machine, use that host’s URL instead.
-- **`ODOO_PASSWORD`** must be the **Odoo user** password for **`ODOO_UID`**, not the PostgreSQL password.
+- **`ODOO_API_KEY`** must be the **Odoo API key** for **`ODOO_UID`**, not the PostgreSQL password.
 
 ### HelloCash invoice path
 
