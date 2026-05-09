@@ -80,7 +80,7 @@ Code nodes run via `tests/harness.mjs` with mocked `$env`, `$('Config Loader')`,
 
 | Area | Status | Notes |
 |------|--------|-------|
-| **Config Loader** | Done | Validates required env vars; builds `hellocash`, `odoo`, `accountMap`, `taxMap`, `retry`, `syncHour`, `errorEmail`. `ODOO_PASSWORD` is checked but **not** emitted in `json` output. |
+| **Config Loader** | Done | Validates required env vars; builds `hellocash`, `odoo`, `accountMap`, `taxMap`, `retry`, `syncHour`, `errorEmail`. `ODOO_API_KEY` is checked but **not** emitted in `json` output. |
 | **Secrets in env** | Done | No tokens/passwords in workflow JSON; use `$env.*` (and n8n Variables). |
 | **HelloCash auth** | Done | Bearer `HELLOCASH_API_TOKEN` on API calls. |
 | **Two-phase HelloCash fetch** | Done | (1) `GET` cashbook. (2) `GET` invoices per `cashBook_invoice_number`. Retries on cashbook fetch. |

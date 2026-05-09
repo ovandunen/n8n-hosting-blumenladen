@@ -48,14 +48,19 @@ services:
       - N8N_USER_MANAGEMENT_MAIN_USER_EMAIL=${N8N_USER:?Set N8N_USER in your .env file}
       - N8N_USER_MANAGEMENT_MAIN_USER_PASSWORD=${N8N_PASSWORD:?Set N8N_PASSWORD in your .env file}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in your .env file}
+      - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_ENCRYPTION_KEY}
       # debug level
       - N8N_LOG_LEVEL=debug
-      - N8N_RUNNERS_TASK_TIMEOUT=60
+      - ODOO_DEBUG_LOG=${ODOO_DEBUG_LOG:-false}
+      - N8N_RUNNERS_TASK_TIMEOUT=300
       - GENERIC_TIMEZONE=${TZ:-UTC}
       - TZ=${TZ:-UTC}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
-      - ODOO_PASSWORD=${ODOO_PASSWORD:?Set ODOO_PASSWORD in your .env file}
+      - ODOO_API_KEY=${ODOO_API_KEY:?Set ODOO_API_KEY in your .env file}
+      # N8N API
+      - N8N_API_ENABLED=${N8N_API_ENABLED:-true}
+      - N8N_PUBLIC_API_DISABLED=${N8N_PUBLIC_API_DISABLED:-false}
 
       # helloCash Config
       - HELLOCASH_BASE_URL=${HELLOCASH_BASE_URL:-https://api.hellocash.business}
@@ -68,6 +73,7 @@ services:
       - ODOO_BASE_URL=${ODOO_BASE_URL:?Set ODOO_BASE_URL in your .env file}
       - ODOO_DB=${ODOO_DB:?Set ODOO_DB in your .env file}
       - ODOO_UID=${ODOO_UID:?Set ODOO_UID in your .env file}
+      - ODOO_PASSWORD=${ODOO_PASSWORD:?Set ODOO_PASSWORD in your .env file}
 
       # Account IDs (from account_group)
       - ACCOUNT_KASSE=${ACCOUNT_KASSE:?Set ACCOUNT_KASSE in your .env file}
@@ -75,12 +81,10 @@ services:
       - ACCOUNT_ERLOESE=${ACCOUNT_ERLOESE:?Set ACCOUNT_ERLOESE in your .env file}
       - ACCOUNT_GUTSCHEIN=${ACCOUNT_GUTSCHEIN:?Set ACCOUNT_GUTSCHEIN in your .env file}
       - ACCOUNT_UST_19=${ACCOUNT_UST_19:?Set ACCOUNT_UST_19 in your .env file}
-      - ACCOUNT_UST_7=${ACCOUNT_UST_7:?Set ACCOUNT_UST_7 in your .env file}
-
+      - ACCOUNT_UST_7=${ACCOUNT_UST_7:-0}
       # Tax IDs (from account_tax)
       - TAX_ID_19=${TAX_ID_19:?Set TAX_ID_19 in your .env file}
-      - TAX_ID_7=${TAX_ID_7:?Set TAX_ID_7 in your .env file}
-
+      - TAX_ID_7=${TAX_ID_7:-0}
       # Journal ID (from account_journal)
       - ODOO_JOURNAL_ID=${ODOO_JOURNAL_ID:?Set ODOO_JOURNAL_ID in your .env file}
 

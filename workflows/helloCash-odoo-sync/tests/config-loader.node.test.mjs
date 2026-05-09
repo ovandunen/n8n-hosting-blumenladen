@@ -17,7 +17,7 @@ test('Config Loader: returns config with expected sections', () => {
   assert.equal(c.taxMap[19], 19);
   assert.equal(c.taxMap[7], 7);
   assert.equal(c.syncHour, 2);
-  assert.ok(!Object.prototype.hasOwnProperty.call(c, 'ODOO_PASSWORD'));
+  assert.ok(!Object.prototype.hasOwnProperty.call(c, 'ODOO_API_KEY'));
   assert.ok(!JSON.stringify(c).toLowerCase().includes('secret'));
 });
 

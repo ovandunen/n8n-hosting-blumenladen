@@ -8,17 +8,17 @@ A timestamped backup is created before any write.
 
 Usage (single line):
     python3 odoo_env_discovery.py \\
-        --url https://artischoke.odoo.com \\
-        --db artischoke \\
-        --user corinna-hug@gmx.de \\
-        --password 'Artischoke1!' \\
+        --url https://<your-subdomain>.odoo.com \\
+        --db <your-subdomain> \\
+        --user <your-email> \\
+        --api-key '<odoo-api-key>' \\
         --env .env
 
 Or via env vars:
-    export ODOO_URL=https://artischoke.odoo.com
-    export ODOO_DB=artischoke
-    export ODOO_USER=corinna-hug@gmx.de
-    export ODOO_PASSWORD='Artischoke1!'
+    export ODOO_URL=https://<your-subdomain>.odoo.com
+    export ODOO_DB=<your-subdomain>                 # optional (auto-derived from ODOO_URL)
+    export ODOO_USER=<your-email>
+    export ODOO_API_KEY='<odoo-api-key>'
     python3 odoo_env_discovery.py --env .env
 
 No third-party dependencies.
@@ -80,29 +80,29 @@ def _post(url: str, payload: dict) -> Any:
 # Auth + data access
 # ──────────────────────────────────────────────────────────────────────────────
 
-def authenticate(base_url: str, db: str, user: str, password: str) -> int:
+def authenticate(base_url: str, db: str, user: str, api_key: str) -> int:
     try:
         result = _post(
             f"{base_url}/web/session/authenticate",
-            {"params": {"db": db, "login": user, "password": password}},
+            {"params": {"db": db, "login": user, "password": api_key}},
         )
     except RuntimeError as exc:
         sys.exit(
             f"[ERROR] Authentication failed: {exc}\n"
-            "  • --url must be https://<subdomain>.odoo.com (not a custom domain)\n"
-            "  • --db  must be the subdomain, e.g. 'artischoke'\n"
-            "  • Check email/password; for 2FA use an API key as --password"
+            "  • --url should typically be https://<subdomain>.odoo.com\n"
+            "  • --db  is the Odoo database name (often the subdomain)\n"
+            "  • Check email/API key; for 2FA use an API key as --api-key"
         )
     uid = (result or {}).get("uid")
     if not uid:
         sys.exit(
-            "[ERROR] uid=False – wrong email/password or --db mismatch.\n"
+            "[ERROR] uid=False – wrong email/API key or --db mismatch.\n"
             f"  Server response: {result}"
         )
     return int(uid)
 
 
-def search_read(base_url: str, db: str, uid: int, password: str,
+def search_read(base_url: str, db: str, uid: int, api_key: str,
                 model: str, domain: list, fields: list,
                 limit: int = 200, order: str = "id asc") -> list:
     try:
@@ -111,7 +111,7 @@ def search_read(base_url: str, db: str, uid: int, password: str,
             {"params": {
                 "service": "object",
                 "method":  "execute_kw",
-                "args":    [db, uid, password, model, "search_read",
+                "args":    [db, uid, api_key, model, "search_read",
                             [domain], {"fields": fields, "limit": limit, "order": order}],
             }},
         ) or []
@@ -124,7 +124,7 @@ def search_read(base_url: str, db: str, uid: int, password: str,
 # Odoo discovery  →  returns dict of env-key: value
 # ──────────────────────────────────────────────────────────────────────────────
 
-def discover_all(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
+def discover_all(base_url: str, db: str, uid: int, api_key: str) -> dict[str, str]:
     discovered: dict[str, str] = {}
 
     # ── base connection vars ──────────────────────────────────────────────────
@@ -133,7 +133,7 @@ def discover_all(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
     discovered["ODOO_UID"]      = str(uid)
 
     # ── journals ─────────────────────────────────────────────────────────────
-    journals = search_read(base_url, db, uid, pw,
+    journals = search_read(base_url, db, uid, api_key,
                            "account.journal", [],
                            ["id", "name", "code", "type"],
                            order="type asc, id asc")
@@ -156,7 +156,7 @@ def discover_all(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
         print("  ⚠ No cash or bank journal found – ODOO_JOURNAL_ID left empty")
 
     # ── accounts ─────────────────────────────────────────────────────────────
-    accounts = search_read(base_url, db, uid, pw,
+    accounts = search_read(base_url, db, uid, api_key,
                            "account.account", [],
                            ["id", "code", "name", "account_type"],
                            limit=500, order="code asc")
@@ -185,7 +185,7 @@ def discover_all(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
             print(f"  ⚠ {var} – no matching account found (tried {codes})")
 
     # ── taxes ─────────────────────────────────────────────────────────────────
-    taxes = search_read(base_url, db, uid, pw,
+    taxes = search_read(base_url, db, uid, api_key,
                         "account.tax",
                         [("type_tax_use", "=", "sale"), ("active", "=", True)],
                         ["id", "name", "amount"],
@@ -271,13 +271,13 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Discover Odoo IDs and write them into a .env file.")
     p.add_argument("--url",      default=os.getenv("ODOO_URL"),
-                   help="Odoo base URL, e.g. https://artischoke.odoo.com")
+                   help="Odoo base URL, e.g. https://<subdomain>.odoo.com")
     p.add_argument("--db",       default=os.getenv("ODOO_DB"),
-                   help="Odoo DB / subdomain, e.g. artischoke")
+                   help="Odoo database name (often the subdomain). Optional if it can be derived from --url.")
     p.add_argument("--user",     default=os.getenv("ODOO_USER"),
                    help="Odoo login email")
-    p.add_argument("--password", default=os.getenv("ODOO_PASSWORD"),
-                   help="Odoo password or API key")
+    p.add_argument("--api-key", default=os.getenv("ODOO_API_KEY"),
+                   help="Odoo API key")
     p.add_argument("--env",      default=os.getenv("ENV_FILE", ".env"),
                    help="Path to .env file to write/update (default: .env)")
     p.add_argument("--no-backup", action="store_true",
@@ -287,13 +287,33 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def derive_odoo_db_from_url(odoo_url: str) -> str | None:
+    """
+    Best-effort DB name inference from an Odoo SaaS URL like:
+      https://<subdomain>.odoo.com  -> <subdomain>
+    Returns None if it can't be inferred safely.
+    """
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(odoo_url).hostname or "").lower()
+    except Exception:
+        return None
+    if host.endswith(".odoo.com") and host.count(".") >= 2:
+        return host.split(".", 1)[0]
+    return None
+
+
 def main() -> None:
     args = parse_args()
+    if not args.db and args.url:
+        inferred = derive_odoo_db_from_url(args.url)
+        if inferred:
+            args.db = inferred
     missing = [k for k, v in [
         ("--url / ODOO_URL",           args.url),
         ("--db  / ODOO_DB",            args.db),
         ("--user / ODOO_USER",         args.user),
-        ("--password / ODOO_PASSWORD", args.password),
+        ("--api-key / ODOO_API_KEY",    args.api_key),
     ] if not v]
     if missing:
         sys.exit(f"[ERROR] Missing required arguments: {', '.join(missing)}")
@@ -302,11 +322,11 @@ def main() -> None:
     env_path = Path(args.env)
 
     print(f"Connecting to {base_url}  db={args.db}  user={args.user} …")
-    uid = authenticate(base_url, args.db, args.user, args.password)
+    uid = authenticate(base_url, args.db, args.user, args.api_key)
     print(f"✓ Authenticated  uid={uid}")
 
     print("\nDiscovering Odoo values …")
-    discovered = discover_all(base_url, args.db, uid, args.password)
+    discovered = discover_all(base_url, args.db, uid, args.api_key)
 
     existing_lines = read_env(env_path)
     merged_lines   = merge_env(existing_lines, discovered)

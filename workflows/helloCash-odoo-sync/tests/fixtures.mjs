@@ -12,7 +12,7 @@ export const validConfigEnv = {
   ODOO_BASE_URL: 'https://odoo.example.com',
   ODOO_DB: 'testdb',
   ODOO_UID: '2',
-  ODOO_PASSWORD: 'secret',
+  ODOO_API_KEY: 'secret',
   ODOO_JOURNAL_ID: '1',
   ACCOUNT_KASSE: '1000',
   ACCOUNT_BANK: '1200',

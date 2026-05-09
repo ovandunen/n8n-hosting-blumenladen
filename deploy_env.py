@@ -13,12 +13,11 @@ Usage:
         --odoo-url  https://<your-subdomain>.odoo.com \\
         --odoo-db   <your-subdomain> \\
         --odoo-user <your-email> \\
-        --odoo-password '<password-or-api-key>' \\
+        --odoo-api-key '<odoo-api-key>' \\
         --source  ../n8n-hosting-acceptance-test/.env \\
         --target  ../n8n-hosting-production/.env \\
         --odoo-base-url https://<public-odoo-domain-if-different> \\
         --set ODOO_API_KEY=<prod_api_key> \\
-        --set ODOO_PASSWORD=<prod_password> \\
         --set N8N_ENCRYPTION_KEY=<prod_n8n_enc_key> \\
         --set N8N_API_KEY=<prod_n8n_api_key> \\
         --set POSTGRES_PASSWORD=<prod_db_pw>
@@ -27,7 +26,7 @@ Or fully via env vars (recommended – nothing sensitive in shell history):
     export ODOO_URL=https://<your-subdomain>.odoo.com
     export ODOO_DB=<your-subdomain>                 # optional (auto-derived from ODOO_URL)
     export ODOO_USER=<your-email>
-    export ODOO_PASSWORD='<password-or-api-key>'
+    export ODOO_API_KEY='<odoo-api-key>'
     export SOURCE_ENV=../n8n-hosting-acceptance-test/.env
     export TARGET_ENV=../n8n-hosting-production/.env
     export ODOO_BASE_URL=https://<public-odoo-domain-if-different>
@@ -73,7 +72,6 @@ STATIC_PRODUCTION_OVERRIDES: dict[str, str] = {
 # The script will warn if any of these are still placeholder after merging.
 REQUIRED_SECRETS = [
     "ODOO_API_KEY",
-    "ODOO_PASSWORD",
     "N8N_API_KEY",
     "N8N_ENCRYPTION_KEY",
     "N8N_PASSWORD",
@@ -116,17 +114,17 @@ def _post(url: str, payload: dict) -> Any:
     return body.get("result")
 
 
-def odoo_authenticate(base_url: str, db: str, user: str, password: str) -> int:
+def odoo_authenticate(base_url: str, db: str, user: str, api_key: str) -> int:
     try:
         result = _post(
             f"{base_url}/web/session/authenticate",
-            {"params": {"db": db, "login": user, "password": password}},
+            {"params": {"db": db, "login": user, "password": api_key}},
         )
     except RuntimeError as exc:
         sys.exit(
             f"[ERROR] Odoo authentication failed: {exc}\n"
-            "  • Check --odoo-url, --odoo-db, email and password\n"
-            "  • Use an API key as --odoo-password if 2FA is enabled"
+            "  • Check --odoo-url, --odoo-db, email and API key\n"
+            "  • Use an API key as --odoo-api-key"
         )
     uid = (result or {}).get("uid")
     if not uid:
@@ -134,7 +132,7 @@ def odoo_authenticate(base_url: str, db: str, user: str, password: str) -> int:
     return int(uid)
 
 
-def odoo_search_read(base_url: str, db: str, uid: int, pw: str,
+def odoo_search_read(base_url: str, db: str, uid: int, api_key: str,
                      model: str, domain: list, fields: list,
                      limit: int = 200, order: str = "id asc") -> list:
     try:
@@ -142,7 +140,7 @@ def odoo_search_read(base_url: str, db: str, uid: int, pw: str,
             f"{base_url}/jsonrpc",
             {"params": {
                 "service": "object", "method": "execute_kw",
-                "args": [db, uid, pw, model, "search_read",
+                "args": [db, uid, api_key, model, "search_read",
                          [domain], {"fields": fields, "limit": limit, "order": order}],
             }},
         ) or []
@@ -155,7 +153,7 @@ def odoo_search_read(base_url: str, db: str, uid: int, pw: str,
 # Odoo discovery  →  returns dict[env_key, value]
 # ══════════════════════════════════════════════════════════════════════════════
 
-def discover_odoo(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
+def discover_odoo(base_url: str, db: str, uid: int, api_key: str) -> dict[str, str]:
     found: dict[str, str] = {
         "ODOO_DB":  db,
         "ODOO_UID": str(uid),
@@ -163,7 +161,7 @@ def discover_odoo(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
     }
 
     # ── Journals ──────────────────────────────────────────────────────────────
-    journals = odoo_search_read(base_url, db, uid, pw,
+    journals = odoo_search_read(base_url, db, uid, api_key,
                                 "account.journal", [],
                                 ["id", "name", "code", "type"],
                                 order="type asc, id asc")
@@ -186,7 +184,7 @@ def discover_odoo(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
         print("  ⚠  No cash/bank journal found – ODOO_JOURNAL_ID not set")
 
     # ── Accounts ──────────────────────────────────────────────────────────────
-    accounts = odoo_search_read(base_url, db, uid, pw,
+    accounts = odoo_search_read(base_url, db, uid, api_key,
                                 "account.account", [],
                                 ["id", "code", "name"],
                                 limit=500, order="code asc")
@@ -201,8 +199,6 @@ def discover_odoo(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
         "ACCOUNT_BANK":      ["1339", "1800"],
         "ACCOUNT_ERLOESE":   ["1200", "8400", "8300", "4400"],
         "ACCOUNT_GUTSCHEIN": ["493",  "0493", "3272"],
-        "ACCOUNT_UST_19":    ["3806", "1776"],   # USt 19% — 3806 confirmed, 1776 SKR03 fallback
-        "ACCOUNT_UST_7":     ["3805", "1771"],   # USt 7%  — 3805 likely, 1771 SKR03 fallback
     }
     for var, codes in account_targets.items():
         for code in codes:
@@ -214,23 +210,58 @@ def discover_odoo(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
         else:
             print(f"  ⚠  {var} – no match for codes {codes}")
 
-    # ── Taxes ─────────────────────────────────────────────────────────────────
-    taxes = odoo_search_read(base_url, db, uid, pw,
+    # ── Taxes + UST accounts (via repartition lines) ───────────────────────────
+    # For each tax rate we:
+    #   1. Find the tax record itself          → TAX_ID_xx
+    #   2. Read its invoice repartition lines  → the 'tax' type line holds the
+    #      account Odoo actually posts VAT to  → ACCOUNT_UST_xx
+    # This works regardless of chart-of-accounts variant (SKR03, SKR04, custom).
+    taxes = odoo_search_read(base_url, db, uid, api_key,
                              "account.tax",
                              [("type_tax_use", "=", "sale"), ("active", "=", True)],
-                             ["id", "name", "amount"],
+                             ["id", "name", "amount", "invoice_repartition_line_ids"],
                              order="amount desc")
-    for rate, var in [(19.0, "TAX_ID_19"), (7.0, "TAX_ID_7")]:
+
+    for rate, tax_var, ust_var in [
+        (19.0, "TAX_ID_19", "ACCOUNT_UST_19"),
+        ( 7.0, "TAX_ID_7",  "ACCOUNT_UST_7"),
+    ]:
         matches = [t for t in taxes if t["amount"] == rate]
-        if matches:
-            found[var] = str(matches[0]["id"])
-            print(f"  ✓  {var}={matches[0]['id']}  {matches[0]['name']}")
-            if len(matches) > 1:
-                print(f"     ⚠ Multiple {rate:.0f}% taxes; picked first")
+        if not matches:
+            found[tax_var] = "0"
+            found[ust_var] = "0"
+            print(f"  ⚠  {tax_var} – no active {rate:.0f}% sale tax found, defaulting to 0")
+            print(f"  ⚠  {ust_var} – no tax found at {rate:.0f}%, defaulting to 0")
+            continue
+
+        tax = matches[0]
+        found[tax_var] = str(tax["id"])
+        print(f"  ✓  {tax_var}={tax['id']}  {tax['name']}")
+        if len(matches) > 1:
+            print(f"     ⚠ Multiple {rate:.0f}% taxes; picked first")
+
+        # Read repartition lines for this tax and find the 'tax' type line
+        # that carries an account_id — that is the UST posting account.
+        rep_lines = odoo_search_read(base_url, db, uid, api_key,
+                                     "account.tax.repartition.line",
+                                     [("tax_id",       "=", tax["id"]),
+                                      ("repartition_type", "=", "tax"),
+                                      ("document_type", "=", "invoice")],
+                                     ["id", "account_id"],
+                                     limit=5)
+        account_id = None
+        for line in rep_lines:
+            if line.get("account_id"):
+                account_id = line["account_id"][0]
+                account_name = line["account_id"][1]
+                break
+
+        if account_id:
+            found[ust_var] = str(account_id)
+            print(f"  ✓  {ust_var}={account_id}  ({account_name})")
         else:
-            default = "0"
-            found[var] = default
-            print(f"  ⚠  {var} – no active {rate:.0f}% sale tax found, defaulting to {default}")
+            found[ust_var] = "0"
+            print(f"  ⚠  {ust_var} – no posting account on repartition line, defaulting to 0")
 
     return found
 
@@ -311,8 +342,8 @@ def parse_args() -> argparse.Namespace:
                    help="Odoo database name (find it in Settings → General Settings → Database Name)")
     g.add_argument("--odoo-user",     default=os.getenv("ODOO_USER"),
                    help="Odoo login email")
-    g.add_argument("--odoo-password", default=os.getenv("ODOO_PASSWORD"),
-                   help="Odoo password or API key")
+    g.add_argument("--odoo-api-key", default=os.getenv("ODOO_API_KEY"),
+                   help="Odoo API key")
     g.add_argument("--odoo-base-url", default=os.getenv("ODOO_BASE_URL"),
                    help="Public-facing base URL to write as ODOO_BASE_URL. Defaults to --odoo-url.")
 
@@ -351,7 +382,7 @@ def main() -> None:
             ("--odoo-url / ODOO_URL",           args.odoo_url),
             ("--odoo-db  / ODOO_DB",            args.odoo_db),
             ("--odoo-user / ODOO_USER",         args.odoo_user),
-            ("--odoo-password / ODOO_PASSWORD", args.odoo_password),
+            ("--odoo-api-key / ODOO_API_KEY",   args.odoo_api_key),
         ]:
             if not val:
                 sys.exit(f"[ERROR] Missing Odoo argument: {flag}\n"
@@ -359,10 +390,10 @@ def main() -> None:
 
         base_url = args.odoo_url.rstrip("/")
         print(f"Connecting to {base_url}  db={args.odoo_db}  user={args.odoo_user} …")
-        uid = odoo_authenticate(base_url, args.odoo_db, args.odoo_user, args.odoo_password)
+        uid = odoo_authenticate(base_url, args.odoo_db, args.odoo_user, args.odoo_api_key)
         print(f"✓ Authenticated  uid={uid}\n")
         print("Discovering Odoo values …")
-        odoo_values = discover_odoo(base_url, args.odoo_db, uid, args.odoo_password)
+        odoo_values = discover_odoo(base_url, args.odoo_db, uid, args.odoo_api_key)
         overrides.update(odoo_values)
         # ODOO_BASE_URL is not fixed; default to the Odoo URL unless overridden.
         overrides["ODOO_BASE_URL"] = (args.odoo_base_url or base_url).rstrip("/")

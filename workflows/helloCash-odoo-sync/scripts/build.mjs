@@ -112,7 +112,7 @@ for (const node of template.nodes) {
   }
   const jsCode = fs.readFileSync(filePath, 'utf8');
   try {
-    new AsyncFunction('$env', '$', 'items', '$http', jsCode);
+    new AsyncFunction('$env', '$', 'items', jsCode);
   } catch (e) {
     console.error(`Syntax error in ${path.relative(root, filePath)}: ${e instanceof Error ? e.message : e}`);
     process.exit(1);
@@ -122,6 +122,8 @@ for (const node of template.nodes) {
   node.parameters.language = node.parameters.language || 'javaScript';
   node.parameters.jsCode = jsCode;
 }
+
+fs.writeFileSync(templatePath, JSON.stringify(template, null, 2) + '\n', 'utf8');
 
 const output = assembleApiWorkflow(template);
 
@@ -134,4 +136,5 @@ if (extraOut.length > 0) {
 
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(outPath, JSON.stringify(output, null, 2) + '\n', 'utf8');
+console.log('Synced template →', path.relative(process.cwd(), templatePath));
 console.log('Built →', path.relative(process.cwd(), outPath));

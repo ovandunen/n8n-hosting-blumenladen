@@ -1,7 +1,7 @@
 /**
  * Config Loader — HelloCash Business → Odoo accounting sync.
  * Validates env; returns config for $('Config Loader').first().json.
- * ODOO_PASSWORD is required here but never included in output json.
+ * ODOO_API_KEY is required here but never included in output json.
  */
 
 const NODE = 'Config Loader';
@@ -11,7 +11,7 @@ const REQUIRED = [
   'ODOO_BASE_URL',
   'ODOO_DB',
   'ODOO_UID',
-  'ODOO_PASSWORD',
+  'ODOO_API_KEY',
   'ODOO_JOURNAL_ID',
   'ACCOUNT_KASSE',
   'ACCOUNT_BANK',
@@ -115,7 +115,7 @@ const config = {
     timeoutMs: 30000,
   },
 
-  /** Odoo JSON-RPC target (password stays in $env.ODOO_PASSWORD only). */
+  /** Odoo JSON-RPC target (API key stays in $env.ODOO_API_KEY only). */
   odoo: {
     baseUrl: (() => {
       let u = String($env.ODOO_BASE_URL).trim().replace(/\/+$/, '');
