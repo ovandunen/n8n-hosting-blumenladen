@@ -10,12 +10,13 @@ Single command to generate a production .env from scratch:
 
 Usage:
     python3 deploy_env.py \\
-        --odoo-url  https://artischoke.odoo.com \\
-        --odoo-db   artischoke \\
-        --odoo-user corinna-hug@gmx.de \\
-        --odoo-password 'Artischoke1!' \\
+        --odoo-url  https://<your-subdomain>.odoo.com \\
+        --odoo-db   <your-subdomain> \\
+        --odoo-user <your-email> \\
+        --odoo-password '<password-or-api-key>' \\
         --source  ../n8n-hosting-acceptance-test/.env \\
         --target  ../n8n-hosting-production/.env \\
+        --odoo-base-url https://<public-odoo-domain-if-different> \\
         --set ODOO_API_KEY=<prod_api_key> \\
         --set ODOO_PASSWORD=<prod_password> \\
         --set N8N_ENCRYPTION_KEY=<prod_n8n_enc_key> \\
@@ -23,12 +24,13 @@ Usage:
         --set POSTGRES_PASSWORD=<prod_db_pw>
 
 Or fully via env vars (recommended – nothing sensitive in shell history):
-    export ODOO_URL=https://artischoke.odoo.com
-    export ODOO_DB=artischoke
-    export ODOO_USER=corinna-hug@gmx.de
-    export ODOO_PASSWORD='Artischoke1!'
+    export ODOO_URL=https://<your-subdomain>.odoo.com
+    export ODOO_DB=<your-subdomain>                 # optional (auto-derived from ODOO_URL)
+    export ODOO_USER=<your-email>
+    export ODOO_PASSWORD='<password-or-api-key>'
     export SOURCE_ENV=../n8n-hosting-acceptance-test/.env
     export TARGET_ENV=../n8n-hosting-production/.env
+    export ODOO_BASE_URL=https://<public-odoo-domain-if-different>
     python3 deploy_env.py \\
         --set ODOO_API_KEY=<prod_api_key> \\
         --set N8N_ENCRYPTION_KEY=<prod_key> \\
@@ -65,8 +67,6 @@ _call_id = 0
 STATIC_PRODUCTION_OVERRIDES: dict[str, str] = {
     # Sync should respect the schedule in production
     "HELLOCASH_IGNORE_SYNC_HOUR": "false",
-    # Base URL shown to end-users (custom domain)
-    "ODOO_BASE_URL": "https://www.artischoke-kunstblumen.de",
 }
 
 # Keys that must be supplied via --set or env vars.
@@ -125,9 +125,8 @@ def odoo_authenticate(base_url: str, db: str, user: str, password: str) -> int:
     except RuntimeError as exc:
         sys.exit(
             f"[ERROR] Odoo authentication failed: {exc}\n"
-            "  • --odoo-url must be https://<subdomain>.odoo.com\n"
-            "  • --odoo-db  must be the subdomain, e.g. 'artischoke'\n"
-            "  • Check credentials; use an API key as --odoo-password if 2FA is on"
+            "  • Check --odoo-url, --odoo-db, email and password\n"
+            "  • Use an API key as --odoo-password if 2FA is enabled"
         )
     uid = (result or {}).get("uid")
     if not uid:
@@ -202,6 +201,8 @@ def discover_odoo(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
         "ACCOUNT_BANK":      ["1339", "1800"],
         "ACCOUNT_ERLOESE":   ["1200", "8400", "8300", "4400"],
         "ACCOUNT_GUTSCHEIN": ["493",  "0493", "3272"],
+        "ACCOUNT_UST_19":    ["3806", "1776"],   # USt 19% — 3806 confirmed, 1776 SKR03 fallback
+        "ACCOUNT_UST_7":     ["3805", "1771"],   # USt 7%  — 3805 likely, 1771 SKR03 fallback
     }
     for var, codes in account_targets.items():
         for code in codes:
@@ -227,7 +228,9 @@ def discover_odoo(base_url: str, db: str, uid: int, pw: str) -> dict[str, str]:
             if len(matches) > 1:
                 print(f"     ⚠ Multiple {rate:.0f}% taxes; picked first")
         else:
-            print(f"  ⚠  {var} – no active {rate:.0f}% sale tax found")
+            default = "0"
+            found[var] = default
+            print(f"  ⚠  {var} – no active {rate:.0f}% sale tax found, defaulting to {default}")
 
     return found
 
@@ -303,13 +306,15 @@ def parse_args() -> argparse.Namespace:
 
     g = p.add_argument_group("Odoo connection")
     g.add_argument("--odoo-url",      default=os.getenv("ODOO_URL"),
-                   help="e.g. https://artischoke.odoo.com")
+                   help="Odoo base URL, e.g. https://www.example.com")
     g.add_argument("--odoo-db",       default=os.getenv("ODOO_DB"),
-                   help="Odoo subdomain / db name, e.g. artischoke")
+                   help="Odoo database name (find it in Settings → General Settings → Database Name)")
     g.add_argument("--odoo-user",     default=os.getenv("ODOO_USER"),
                    help="Odoo login email")
     g.add_argument("--odoo-password", default=os.getenv("ODOO_PASSWORD"),
                    help="Odoo password or API key")
+    g.add_argument("--odoo-base-url", default=os.getenv("ODOO_BASE_URL"),
+                   help="Public-facing base URL to write as ODOO_BASE_URL. Defaults to --odoo-url.")
 
     g2 = p.add_argument_group("File paths")
     g2.add_argument("--source", default=os.getenv("SOURCE_ENV"),
@@ -359,8 +364,8 @@ def main() -> None:
         print("Discovering Odoo values …")
         odoo_values = discover_odoo(base_url, args.odoo_db, uid, args.odoo_password)
         overrides.update(odoo_values)
-        # Keep the custom domain as ODOO_BASE_URL (not the .odoo.com subdomain URL)
-        overrides["ODOO_BASE_URL"] = STATIC_PRODUCTION_OVERRIDES["ODOO_BASE_URL"]
+        # ODOO_BASE_URL is not fixed; default to the Odoo URL unless overridden.
+        overrides["ODOO_BASE_URL"] = (args.odoo_base_url or base_url).rstrip("/")
 
     # ── Step 3: apply --set flags (highest priority) ──────────────────────────
     for item in args.set:
