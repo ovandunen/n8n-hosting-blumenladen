@@ -14,12 +14,13 @@ export const validConfigEnv = {
   ODOO_UID: '2',
   ODOO_API_KEY: 'secret',
   ODOO_JOURNAL_ID: '1',
-  ACCOUNT_KASSE: '1000',
+  ACCOUNT_KASSE: '1612',
   ACCOUNT_BANK: '1200',
-  ACCOUNT_ERLOESE: '8400',
+  ACCOUNT_ERLOESE: '1912',
   ACCOUNT_GUTSCHEIN: '2800',
-  TAX_ID_19: '19',
-  TAX_ID_7: '7',
+  ACCOUNT_EC: '1466',
+  ACCOUNT_KREDITKARTE: '1466',
+  ACCOUNT_RECHNUNG: '1464',
   SYNC_HOUR: '2',
   ERROR_EMAIL: 'ops@example.com',
 };
@@ -36,17 +37,48 @@ export function sampleConfigJson() {
       db: 'testdb',
       uid: 2,
       journalId: 1,
+      journalKasse: 101,
+      journalBank: 102,
+      journalVerkauf: 103,
+    },
+    accounts: {
+      kasse: 1612,
+      bank: 1200,
+      erloese: 1912,
+      gutschein: 2800,
+      ec: 1466,
+      kreditkarte: 1466,
+      rechnung: 1464,
     },
     accountMap: {
-      CASH: { debit: 1000, credit: 8400 },
-      EC: { debit: 1200, credit: 8400 },
-      CREDITCARD: { debit: 1200, credit: 8400 },
-      VOUCHER: { debit: 2800, credit: 8400 },
+      CASH: { debit: 1612, credit: 1912 },
+      EC: { debit: 1466, credit: 1912 },
+      CREDITCARD: { debit: 1466, credit: 1912 },
+      VOUCHER: { debit: 2800, credit: 1912 },
     },
-    taxMap: { 7: 7, 19: 19 },
     retry: { maxAttempts: 2, intervalMs: 1 },
     syncHour: 2,
     errorEmail: 'ops@example.com',
+
+    ACCOUNT_EC: 1466,
+    ACCOUNT_KREDITKARTE: 1466,
+    ACCOUNT_RECHNUNG: 1464,
+    JOURNAL_KASSE: 101,
+    JOURNAL_BANK: 102,
+    JOURNAL_VERKAUF: 103,
+  };
+}
+
+/** Same as sampleConfigJson but JOURNAL_BANK omitted (null) for fallback tests. */
+export function sampleConfigJsonBankJournalFallback() {
+  const base = sampleConfigJson();
+  return {
+    ...base,
+    odoo: {
+      ...base.odoo,
+      journalBank: null,
+    },
+    JOURNAL_BANK: null,
   };
 }
 

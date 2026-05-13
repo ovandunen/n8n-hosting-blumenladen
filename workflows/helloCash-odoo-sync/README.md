@@ -13,11 +13,13 @@ Use this as a high-level release note for operators and reviewers. For exact beh
 - **HelloCash → Odoo journal entries**: two-phase HelloCash fetch (cashbook + invoices), mapping to `account.move` payloads, then **Odoo JSON-RPC** `search_read` (idempotency on `ref`) and `create`.
 - **Operational safety on HelloCash HTTP**: retries with backoff, optional circuit breaker, richer **attempt history / diagnostics** on terminal failure (masked token, URL, status, body snippet).
 - **Odoo write path**: validates `odooVals` before RPC; on create failure, a **post-failure `search_read`** reduces duplicate risk when Odoo accepted the write but the client errored.
+- **Revenue without Odoo tax split (fix / behaviour change)**: Map to Odoo **does not** set `tax_ids` on journal lines. Config Loader **no longer** requires `TAX_ID_19` / `TAX_ID_7` or emits `taxMap`. The **gross** HelloCash amount (`cashBook_total`) is credited to the revenue account so Odoo does **not** auto-post separate USt lines from this integration. *(If you need VAT lines, handle them outside this workflow or via Odoo account/tax defaults — not via `tax_ids` from the sync.)*
 
 ### Minor (quality / ops)
 
 - **HelloCash URL joining** tolerates `HELLOCASH_BASE_URL` with or without overlapping `/api/v1` path segments.
-- **Invoice enrichment**: supports split payments when invoice detail objects expose multiple payment lines; still maps **7% / 19%** Odoo taxes (HelloCash **20%** maps to the **19%** tax id).
+- **Invoice enrichment**: supports split payments when invoice detail objects expose multiple payment lines; invoice tax fields may still appear in **logs / move `narration`** for operators, but they **do not** drive Odoo `tax_ids`.
+- **SKR-style receivables & journals**: optional **`ACCOUNT_EC`**, **`ACCOUNT_KREDITKARTE`**, **`ACCOUNT_FORDERUNGEN`** (default to `ACCOUNT_BANK`); optional **`JOURNAL_KASSE`**, **`JOURNAL_BANK`**, **`JOURNAL_VERKAUF`** (default to `ODOO_JOURNAL_ID`). Credit-card keywords are classified before generic “Karte” so **Visa/Mastercard** map to the **Kreditkarte** bucket, not EC.
 - **Odoo RPC logging**: optional verbose payload logging via **`ODOO_DEBUG_LOG`** (password remains redacted in logged RPC bodies).
 - **Workflow packaging**: `scripts/build.mjs` injects Code node sources into `src/workflow-template.json`; `scripts/validate-workflow.mjs` checks export-shaped JSON.
 
@@ -80,12 +82,12 @@ Code nodes run via `tests/harness.mjs` with mocked `$env`, `$('Config Loader')`,
 
 | Area | Status | Notes |
 |------|--------|-------|
-| **Config Loader** | Done | Validates required env vars; builds `hellocash`, `odoo`, `accountMap`, `taxMap`, `retry`, `syncHour`, `errorEmail`. `ODOO_API_KEY` is checked but **not** emitted in `json` output. |
+| **Config Loader** | Done | Validates required env vars; builds `hellocash`, `odoo` (incl. `journalKasse` / `journalBank` / `journalVerkauf`), `accountMap`, `retry`, `syncHour`, `errorEmail`. Optional **`ACCOUNT_EC`**, **`ACCOUNT_KREDITKARTE`**, **`ACCOUNT_FORDERUNGEN`**, **`JOURNAL_*`** default to bank journal / `ACCOUNT_BANK` when unset. `ODOO_API_KEY` is checked but **not** emitted in `json` output. |
 | **Secrets in env** | Done | No tokens/passwords in workflow JSON; use `$env.*` (and n8n Variables). |
 | **HelloCash auth** | Done | Bearer `HELLOCASH_API_TOKEN` on API calls. |
 | **Two-phase HelloCash fetch** | Done | (1) `GET` cashbook. (2) `GET` invoices per `cashBook_invoice_number`. Retries on cashbook fetch. |
 | **Cancel / void handling** | Done | Skips cancelled cashbook rows and cancelled invoices. |
-| **Mapping to Odoo** | Done | Deposits vs withdrawals; payment method; 7%/19% tax; idempotent `ref`. |
+| **Mapping to Odoo** | Done | Deposits vs withdrawals; **CASH / EC / CREDITCARD / FORDERUNGEN / VOUCHER** → `accountMap`; **gross** revenue **without** `tax_ids`; `journal_id` from **JOURNAL_KASSE** / **JOURNAL_BANK** / **JOURNAL_VERKAUF** (see README); idempotent `ref`. |
 | **Odoo JSON-RPC** | Done | `execute_kw` `search_read` + `create`. |
 | **Error notification** | Done | **Send Error Email** on Code node error outputs (requires SMTP credential in n8n). |
 
@@ -154,7 +156,20 @@ flowchart LR
 
 Required: see `env/.env.example` and `src/nodes/01-config-loader.js`.
 
-Optional: `HELLOCASH_LIST_PATH`, `HELLOCASH_INVOICES_PATH`, `HELLOCASH_QUERY_FROM`/`TO`, `HELLOCASH_CASHBOOK_*`, `HELLOCASH_INVOICES_*`, `HELLOCASH_IGNORE_SYNC_HOUR`, `ERROR_EMAIL_FROM`.
+Optional (HelloCash / ops): `HELLOCASH_LIST_PATH`, `HELLOCASH_INVOICES_PATH`, `HELLOCASH_QUERY_FROM`/`TO`, `HELLOCASH_CASHBOOK_*`, `HELLOCASH_INVOICES_*`, `HELLOCASH_IGNORE_SYNC_HOUR`, `ERROR_EMAIL_FROM`.
+
+Optional (Odoo SKR-style — when unset, EC/KK/Forderungen debit use **`ACCOUNT_BANK`**, and **`JOURNAL_*`** use **`ODOO_JOURNAL_ID`**):
+
+| Variable | Typical SKR03 (codes) | Role |
+|----------|----------------------|------|
+| `ACCOUNT_EC` | 1361 EC-Karten | Debit bucket for **EC** / Girocard-style payments |
+| `ACCOUNT_KREDITKARTE` | 1362 Kreditkarten | Debit bucket for **Visa/Mastercard/Amex**-style payments |
+| `ACCOUNT_FORDERUNGEN` | 1400 Lieferforderungen | Debit bucket when payment text matches **open invoice / receivable** heuristics (`FORDERUNGEN`) |
+| `JOURNAL_KASSE` | — | Odoo `account.journal` id for moves that are **only** Bar / Gutschein |
+| `JOURNAL_BANK` | — | Odoo journal id when the move includes **EC** or **credit card** lines |
+| `JOURNAL_VERKAUF` | — | Odoo journal id when the move includes **FORDERUNGEN** (open invoice) lines |
+
+If a split payment mixes methods, journal is chosen in order: any **FORDERUNGEN** → `JOURNAL_VERKAUF`; else any **EC**/**CREDITCARD** → `JOURNAL_BANK`; else **`JOURNAL_KASSE`**.
 
 # Deployment
 

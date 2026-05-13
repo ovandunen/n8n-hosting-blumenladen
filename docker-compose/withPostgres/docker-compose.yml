@@ -68,6 +68,9 @@ services:
       - HELLOCASH_IGNORE_SYNC_HOUR=${HELLOCASH_IGNORE_SYNC_HOUR:-false}
       - HELLOCASH_LIST_PATH=${HELLOCASH_LIST_PATH:-/api/v1/cashBook}
       - HELLOCASH_INVOICES_PATH=${HELLOCASH_INVOICES_PATH:-/api/v1/invoices}
+      - HELLOCASH_QUERY_FROM=${HELLOCASH_QUERY_FROM}
+      - HELLOCASH_QUERY_TO=${HELLOCASH_QUERY_TO}
+      - HELLOCASH_DAYS_BACK=${HELLOCASH_DAYS_BACK}
 
       # Odoo: origin only (no /jsonrpc) — workflow appends /jsonrpc. From container, reach host Odoo via host.docker.internal.
       - ODOO_BASE_URL=${ODOO_BASE_URL:?Set ODOO_BASE_URL in your .env file}
@@ -77,16 +80,20 @@ services:
 
       # Account IDs (from account_group)
       - ACCOUNT_KASSE=${ACCOUNT_KASSE:?Set ACCOUNT_KASSE in your .env file}
+      - ACCOUNT_RECHNUNG=${ACCOUNT_RECHNUNG:?Set ACCOUNT_RECHNUNG in your .env file}
       - ACCOUNT_BANK=${ACCOUNT_BANK:?Set ACCOUNT_BANK in your .env file}
       - ACCOUNT_ERLOESE=${ACCOUNT_ERLOESE:?Set ACCOUNT_ERLOESE in your .env file}
       - ACCOUNT_GUTSCHEIN=${ACCOUNT_GUTSCHEIN:?Set ACCOUNT_GUTSCHEIN in your .env file}
+      # Optional: SKR-style receivables (Odoo account.account id). Empty → use ACCOUNT_BANK for that bucket.
+      - ACCOUNT_EC=${ACCOUNT_EC:-}
+      - ACCOUNT_KREDITKARTE=${ACCOUNT_KREDITKARTE:-}
       - ACCOUNT_UST_19=${ACCOUNT_UST_19:?Set ACCOUNT_UST_19 in your .env file}
       - ACCOUNT_UST_7=${ACCOUNT_UST_7:-0}
-      # Tax IDs (from account_tax)
-      - TAX_ID_19=${TAX_ID_19:?Set TAX_ID_19 in your .env file}
-      - TAX_ID_7=${TAX_ID_7:-0}
-      # Journal ID (from account_journal)
+      # Journal ID (from account_journal). ODOO_JOURNAL_ID is required default; set these to split Bar / Bank / Verkauf.
       - ODOO_JOURNAL_ID=${ODOO_JOURNAL_ID:?Set ODOO_JOURNAL_ID in your .env file}
+      - JOURNAL_KASSE=${JOURNAL_KASSE:-}
+      - JOURNAL_BANK=${JOURNAL_BANK:-}
+      - JOURNAL_VERKAUF=${JOURNAL_VERKAUF:-}
 
       # Sync Settings
       - SYNC_HOUR=${SYNC_HOUR:-22}
