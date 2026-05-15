@@ -46,6 +46,6 @@ The n8n container **cannot** reach Odoo at `http://localhost:8069` — `localhos
 - If Odoo runs on another machine, use that host’s URL instead.
 - **`ODOO_API_KEY`** must be the **Odoo API key** for **`ODOO_UID`**, not the PostgreSQL password.
 
-### HelloCash invoice path
+### HelloCash API paths
 
-`HELLOCASH_INVOICES_PATH` must start with `/` (e.g. `/api/v1/invoices`). A typo like `i/api/...` breaks invoice requests.
+The workflow calls HelloCash **`/api/v1/invoices`** for the list (VAT lives on invoice documents when the API returns `taxes[]`). **`/api/v1/cashBook`** is not used as the list source. Only **`HELLOCASH_BASE_URL`** (origin) is configured via env.

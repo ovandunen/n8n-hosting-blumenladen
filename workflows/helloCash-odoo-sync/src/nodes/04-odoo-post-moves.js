@@ -330,6 +330,38 @@ return null;
 }
 
 /**
+ * Classify Odoo RPC error text for batch handling (permanent business conflict vs retryable).
+ * @param {string} errorMessage
+ * @returns {{ permanent: boolean, reason: string, action: string }}
+ */
+function classifyOdooError(errorMessage) {
+  const msg = String(errorMessage ?? '');
+  const rows = [
+    { re: /another model is using/i, reason: 'odoo_move_locked', action: 'skip_and_alert' },
+    { re: /record you are trying to delete/i, reason: 'odoo_move_locked', action: 'skip_and_alert' },
+    { re: /already reconciled/i, reason: 'odoo_move_reconciled', action: 'skip_and_alert' },
+    { re: /cannot delete posted/i, reason: 'odoo_move_posted', action: 'skip_and_alert' },
+  ];
+  for (const row of rows) {
+    if (row.re.test(msg)) {
+      return { permanent: true, reason: row.reason, action: row.action };
+    }
+  }
+  return { permanent: false, reason: 'retryable', action: 'retry' };
+}
+
+/** @param {unknown} j */
+function isPermanentOdooSkip(j) {
+  return (
+    j &&
+    typeof j === 'object' &&
+    /** @type {{ skipped?: unknown, reason?: unknown }} */ (j).skipped === true &&
+    typeof /** @type {{ reason?: unknown }} */ (j).reason === 'string' &&
+    String(/** @type {{ reason?: string }} */ (j).reason).startsWith('odoo_')
+  );
+}
+
+/**
 * Hauptfunktion – Arrow, damit this.helpers beim Aufruf `return run()` gesetzt bleibt.
 * @returns {Promise<any[]>} Ergebnisse für n8n
 */
@@ -645,8 +677,32 @@ continue;
 const createRes = await rpcWithRetry('account.move', 'create', [[odooVals]], {}, `create ref=${ref}`);
 if (!createRes.ok) {
 const msg = createRes.error instanceof Error ? createRes.error.message : String(createRes.error);
+const classification = classifyOdooError(msg);
 
-// Safety net: post‑failure check
+if (classification.permanent) {
+console.error(`${NODE}: permanent Odoo conflict — skip item`, {
+ref,
+hellocashId,
+classification,
+error: msg,
+});
+results.push({
+json: {
+...j,
+success: false,
+skipped: true,
+reason: classification.reason,
+error: msg,
+odooMoveId: j.odooMoveId ?? null,
+hellocashId,
+ref,
+action: 'requires_manual_reconciliation',
+},
+});
+continue;
+}
+
+// Safety net: post‑failure check (retryable path only)
 const postCheck = await rpcWithRetry(
 'account.move',
 'search_read',
@@ -702,9 +758,23 @@ createdAt: nowIso(),
 }
 
 // ── Post-loop failure gate ──────────────────────
+const permanentSkips = results.filter((r) => r.json && isPermanentOdooSkip(r.json));
+if (permanentSkips.length > 0) {
+console.warn(`${NODE}: permanent business conflicts summary (batch continues)`, {
+at: nowIso(),
+count: permanentSkips.length,
+items: permanentSkips.map((r) => ({
+ref: r.json?.ref,
+hellocashId: r.json?.hellocashId,
+reason: r.json?.reason,
+})),
+});
+}
+
 const hardFailures = results.filter(
 (r) =>
 r.json &&
+!isPermanentOdooSkip(r.json) &&
 (r.json.success === false ||
 r.json.reason === 'dedupe_check_failed' ||
 r.json.reason === 'invalid_payload'),

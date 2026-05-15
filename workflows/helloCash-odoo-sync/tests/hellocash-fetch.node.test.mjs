@@ -1,10 +1,15 @@
 /**
- * Unit: n8n node "HelloCash Fetch" — two-phase HTTP fetch with mocked httpRequest.
+ * Unit: n8n node "HelloCash Fetch" — GET /api/v1/invoices with mocked httpRequest.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runAsyncCodeNode } from './harness.mjs';
 import { mockConfigLoader$, sampleConfigJson } from './fixtures.mjs';
+
+/** @param {string} u */
+function isInvoicesUrl(u) {
+  return /\/invoices(?:\?|$)/i.test(String(u));
+}
 
 test('HelloCash Fetch: returns skipped when sync hour mismatches and ignore flag off', async () => {
   const config = sampleConfigJson();
@@ -28,29 +33,27 @@ test('HelloCash Fetch: returns skipped when sync hour mismatches and ignore flag
   assert.equal(out[0].json.reason, 'sync_hour');
 });
 
-test('HelloCash Fetch: fetches cashbook and returns entries + invoices map', async () => {
+test('HelloCash Fetch: fetches invoices and returns entries + invoices map', async () => {
   const calls = [];
-  const cashbookPayload = {
-    entries: [
-      {
-        cashBook_id: '1234',
-        cashBook_number: '284',
-        cashBook_type: 'deposit',
-        cashBook_total: '2.00',
-        cashBook_cancellation: '0',
-        cashBook_invoice_number: '455',
-        cashBook_timestamp: '2017-09-15 09:59:13',
-        cashBook_description: 'Test',
-      },
-    ],
-  };
   const invoicePayload = {
+    count: 2,
+    limit: 1000,
+    offset: 0,
     invoices: [
       {
+        invoice_id: '1',
         invoice_number: '455',
-        invoice_payment: 'cash',
+        invoice_timestamp: '2017-09-15 09:59:13',
+        invoice_payment: 'Bar',
+        invoice_total: '2.00',
         invoice_cancellation: '0',
-        taxes: [{ tax_taxRate: '19' }],
+        taxes: [{ tax_taxRate: '19', tax_net: '1.68', tax_tax: '0.32' }],
+      },
+      {
+        invoice_id: '2',
+        invoice_number: '456',
+        invoice_cancellation: '1',
+        invoice_total: '9.00',
       },
     ],
   };
@@ -65,24 +68,43 @@ test('HelloCash Fetch: fetches cashbook and returns entries + invoices map', asy
       helpers: {
         httpRequest: async (opts) => {
           calls.push(opts.url);
-          if (String(opts.url).includes('/cashBook') || String(opts.url).includes('cashBook')) {
-            return cashbookPayload;
-          }
-          return invoicePayload;
+          if (isInvoicesUrl(opts.url)) return invoicePayload;
+          return { invoices: [] };
         },
       },
     },
   });
 
   assert.equal(out[0].json.skipped, false);
-  assert.ok(out[0].json.hellocashData.entries.length >= 1);
+  assert.equal(out[0].json.hellocashData.entries.length, 1);
+  assert.equal(out[0].json.hellocashData.entries[0].invoice_number, '455');
   assert.ok(out[0].json.hellocashData.invoices['455']);
-  assert.ok(calls.length >= 2);
+  assert.equal(out[0].json.hellocashData.meta.source, 'invoices');
+  assert.equal(out[0].json.hellocashData.meta.entryShape, 'invoice');
+  assert.equal(out[0].json.hellocashData.meta.apiPaths.invoices, '/api/v1/invoices');
+  assert.equal(calls.length, 1);
+  assert.ok(isInvoicesUrl(calls[0]), calls[0]);
 });
 
-test('HelloCash Fetch: cashbook URL omits unset/empty query params', async () => {
-  const calls = [];
-  await runAsyncCodeNode('02-hellocash-fetch.js', {
+test('HelloCash Fetch: accepts API body with entries array when invoices key absent', async () => {
+  const payload = {
+    count: 1,
+    limit: 1000,
+    offset: 0,
+    entries: [
+      {
+        invoice_id: '9',
+        invoice_number: '999',
+        invoice_timestamp: '2026-05-10 10:00:00',
+        invoice_payment: 'Bar',
+        invoice_total: '1.00',
+        invoice_cancellation: '0',
+        taxes: [],
+      },
+    ],
+  };
+
+  const out = await runAsyncCodeNode('02-hellocash-fetch.js', {
     $env: {
       HELLOCASH_API_TOKEN: 'tok',
       HELLOCASH_IGNORE_SYNC_HOUR: '1',
@@ -91,25 +113,87 @@ test('HelloCash Fetch: cashbook URL omits unset/empty query params', async () =>
     self: {
       helpers: {
         httpRequest: async (opts) => {
-          calls.push(opts.url);
-          if (String(opts.url).includes('/cashBook') || String(opts.url).includes('cashBook')) {
-            return { entries: [] };
-          }
+          if (isInvoicesUrl(opts.url)) return payload;
           return { invoices: [] };
         },
       },
     },
   });
-  const cashUrl = calls.find((u) => String(u).includes('cashBook'));
-  assert.ok(cashUrl, 'expected a cashBook request');
-  assert.ok(!String(cashUrl).includes('search='), 'empty search should be omitted');
-  assert.ok(!String(cashUrl).includes('dateFrom='), 'empty dateFrom should be omitted');
-  assert.ok(!String(cashUrl).includes('dateTo='), 'empty dateTo should be omitted');
-  assert.ok(String(cashUrl).includes('limit='), 'limit should be present');
-  assert.ok(String(cashUrl).includes('offset='), 'offset should be present');
+
+  assert.equal(out[0].json.hellocashData.entries.length, 1);
+  assert.equal(out[0].json.hellocashData.entries[0].invoice_number, '999');
+  assert.ok(out[0].json.hellocashData.invoices['999']);
+  assert.equal(out[0].json.hellocashData.meta.entryShape, 'invoice');
 });
 
-test('HelloCash Fetch: merges base URL path with list path (no duplicate /api/v1)', async () => {
+test('HelloCash Fetch: when HELLOCASH_QUERY_FROM/TO unset, URL dateFrom/dateTo match local today minus daysBack', async () => {
+  function toDateString(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  const daysBack = 7;
+  const today = new Date();
+  const fromDate = new Date(today);
+  fromDate.setDate(today.getDate() - daysBack);
+  const expectedFrom = toDateString(fromDate);
+  const expectedTo = toDateString(today);
+
+  const calls = [];
+  await runAsyncCodeNode('02-hellocash-fetch.js', {
+    $env: {
+      HELLOCASH_API_TOKEN: 'tok',
+      HELLOCASH_IGNORE_SYNC_HOUR: '1',
+      HELLOCASH_DAYS_BACK: String(daysBack),
+    },
+    $: mockConfigLoader$(sampleConfigJson()),
+    self: {
+      helpers: {
+        httpRequest: async (opts) => {
+          calls.push(opts.url);
+          if (isInvoicesUrl(opts.url)) return { invoices: [] };
+          return { invoices: [] };
+        },
+      },
+    },
+  });
+  const invUrl = calls.find((u) => isInvoicesUrl(u));
+  assert.ok(invUrl, 'expected an invoices request');
+  const u = new URL(invUrl);
+  assert.equal(u.searchParams.get('dateFrom'), expectedFrom);
+  assert.equal(u.searchParams.get('dateTo'), expectedTo);
+  assert.ok(String(invUrl).includes('limit='), 'limit should be present');
+  assert.ok(String(invUrl).includes('offset='), 'offset should be present');
+});
+
+test('HelloCash Fetch: includes dateFrom and dateTo when HELLOCASH_QUERY_* set', async () => {
+  const calls = [];
+  await runAsyncCodeNode('02-hellocash-fetch.js', {
+    $env: {
+      HELLOCASH_API_TOKEN: 'tok',
+      HELLOCASH_IGNORE_SYNC_HOUR: '1',
+      HELLOCASH_QUERY_FROM: '2024-01-01',
+      HELLOCASH_QUERY_TO: '2024-01-31',
+    },
+    $: mockConfigLoader$(sampleConfigJson()),
+    self: {
+      helpers: {
+        httpRequest: async (opts) => {
+          calls.push(opts.url);
+          if (isInvoicesUrl(opts.url)) return { invoices: [] };
+          return { invoices: [] };
+        },
+      },
+    },
+  });
+  const invUrl = calls.find((u) => isInvoicesUrl(u));
+  assert.ok(invUrl);
+  assert.ok(String(invUrl).includes('dateFrom='), invUrl);
+  assert.ok(String(invUrl).includes('dateTo='), invUrl);
+});
+
+test('HelloCash Fetch: merges base URL path with invoices path (no duplicate /api/v1)', async () => {
   const calls = [];
   const cfg = sampleConfigJson();
   cfg.hellocash.baseUrl = 'https://api.hellocash.business/api/v1';
@@ -124,25 +208,20 @@ test('HelloCash Fetch: merges base URL path with list path (no duplicate /api/v1
       helpers: {
         httpRequest: async (opts) => {
           calls.push(opts.url);
-          if (String(opts.url).includes('cashBook')) {
-            return { entries: [] };
-          }
+          if (isInvoicesUrl(opts.url)) return { invoices: [] };
           return { invoices: [] };
         },
       },
     },
   });
 
-  const cashUrl = calls.find((u) => String(u).includes('cashBook'));
-  assert.ok(cashUrl, 'expected cashBook request');
+  const invUrl = calls.find((u) => isInvoicesUrl(u));
+  assert.ok(invUrl, 'expected invoices request');
   assert.ok(
-    String(cashUrl).includes('/api/v1/cashBook'),
-    `expected single /api/v1 segment before cashBook, got: ${cashUrl}`,
+    String(invUrl).includes('/api/v1/invoices'),
+    `expected single /api/v1 segment before invoices, got: ${invUrl}`,
   );
-  assert.ok(
-    !String(cashUrl).includes('/api/v1/api/v1'),
-    `must not duplicate /api/v1, got: ${cashUrl}`,
-  );
+  assert.ok(!String(invUrl).includes('/api/v1/api/v1'), `must not duplicate /api/v1, got: ${invUrl}`);
 });
 
 test('HelloCash Fetch: protocol-relative base //host is normalized to https', async () => {
@@ -160,19 +239,17 @@ test('HelloCash Fetch: protocol-relative base //host is normalized to https', as
       helpers: {
         httpRequest: async (opts) => {
           calls.push(opts.url);
-          if (String(opts.url).includes('cashBook')) {
-            return { entries: [] };
-          }
+          if (isInvoicesUrl(opts.url)) return { invoices: [] };
           return { invoices: [] };
         },
       },
     },
   });
 
-  const cashUrl = calls.find((u) => String(u).includes('cashBook'));
-  assert.ok(cashUrl, 'expected cashBook request');
-  assert.ok(String(cashUrl).startsWith('https://api.hellocash.business/'), cashUrl);
-  assert.ok(!String(cashUrl).includes('/api/v1/api/v1'), cashUrl);
+  const invUrl = calls.find((u) => isInvoicesUrl(u));
+  assert.ok(invUrl, 'expected invoices request');
+  assert.ok(String(invUrl).startsWith('https://api.hellocash.business/'), invUrl);
+  assert.ok(!String(invUrl).includes('/api/v1/api/v1'), invUrl);
 });
 
 test('HelloCash Fetch: thrown error first line includes HTTP status when request fails', async () => {
@@ -201,7 +278,59 @@ test('HelloCash Fetch: thrown error first line includes HTTP status when request
     const msg = e instanceof Error ? e.message : String(e);
     assert.match(msg, /^HTTP 401 \|/m, msg.slice(0, 200));
     assert.ok(
-      e instanceof Error && 'diagnostic' in e && /** @type {{ diagnostic: { httpStatus?: number } }} */ (e).diagnostic.httpStatus === 401,
+      e instanceof Error &&
+        'diagnostic' in e &&
+        /** @type {{ diagnostic: { httpStatus?: number } }} */ (e).diagnostic.httpStatus === 401,
     );
   }
+});
+
+test('HelloCash Fetch: tax breakdown and rate come from single invoices response', async () => {
+  const calls = [];
+  const invoicePayload = {
+    invoices: [
+      {
+        invoice_id: 'inv1',
+        invoice_number: '1986',
+        invoice_timestamp: '2026-05-10 09:00:00',
+        invoice_payment: 'Bar',
+        invoice_total: '119.00',
+        invoice_cancellation: '0',
+        taxes: [{ tax_taxRate: '19', tax_gross: '119', tax_net: '100.00', tax_tax: '19.00' }],
+      },
+    ],
+  };
+
+  const out = await runAsyncCodeNode('02-hellocash-fetch.js', {
+    $env: {
+      HELLOCASH_API_TOKEN: 'tok',
+      HELLOCASH_IGNORE_SYNC_HOUR: '1',
+    },
+    $: mockConfigLoader$(sampleConfigJson()),
+    self: {
+      helpers: {
+        httpRequest: async (opts) => {
+          calls.push(opts.url);
+          if (isInvoicesUrl(opts.url)) return invoicePayload;
+          return { invoices: [] };
+        },
+      },
+    },
+  });
+
+  assert.equal(out[0].json.hellocashData.entries.length, 1);
+  assert.equal(out[0].json.hellocashData.meta.entryShape, 'invoice');
+  assert.equal(out[0].json.hellocashData.meta.source, 'invoices');
+  assert.ok(out[0].json.hellocashData.invoices['1986']);
+  assert.equal(
+    /** @type {{ taxes: unknown[] }} */ (out[0].json.hellocashData.invoices['1986']).taxes.length,
+    1,
+  );
+  assert.equal(
+    /** @type {{ taxes: Array<{ tax_taxRate?: string }> }} */ (out[0].json.hellocashData.invoices['1986']).taxes[0]
+      .tax_taxRate,
+    '19',
+  );
+  assert.equal(calls.length, 1);
+  assert.ok(isInvoicesUrl(calls[0]), calls[0]);
 });

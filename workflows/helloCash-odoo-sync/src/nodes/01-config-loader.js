@@ -17,8 +17,7 @@ const REQUIRED = [
   'ACCOUNT_BANK',
   'ACCOUNT_ERLOESE',
   'ACCOUNT_GUTSCHEIN',
-  'TAX_ID_19',
-  'TAX_ID_7',
+  'ACCOUNT_UST_19',
   'SYNC_HOUR',
   'ERROR_EMAIL',
 ];
@@ -38,7 +37,6 @@ function validateBaseUrl(label, urlRaw) {
   const raw = String(urlRaw ?? '').trim();
   const normalized = raw.replace(/\/+$/, '');
 
-  // Reject bare ports like "8069" or "3000".
   if (/^\d{2,5}$/.test(normalized)) {
     throw new Error(
       `${NODE}: ${label} must be a full URL, not just a port (got ${JSON.stringify(raw)}). ` +
@@ -54,8 +52,6 @@ function validateBaseUrl(label, urlRaw) {
     );
   }
 
-  // n8n Code nodes run in a sandbox where global URL may be undefined.
-  // Validate with a conservative regex instead of relying on URL parsing.
   const candidate = forSchemeCheck.startsWith('//') ? `https:${forSchemeCheck}` : forSchemeCheck;
   const m = candidate.match(/^https?:\/\/([^\/?#]+)(\/|$)/i);
   const host = m ? m[1] : '';
@@ -90,6 +86,20 @@ function parseIntEnv(envName, raw) {
   return n;
 }
 
+/** Optional account id: empty env → fallbackInt (e.g. ACCOUNT_BANK). */
+function parseIntEnvOrFallback(envName, fallbackInt) {
+  const raw = $env[envName];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallbackInt;
+  return parseIntEnv(envName, raw);
+}
+
+/** Optional Odoo journal id (empty env → null; mapping node falls back to ODOO_JOURNAL_ID). */
+function parseJournalIdOptional(envName) {
+  const raw = $env[envName];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
+  return parseIntEnv(envName, raw);
+}
+
 /** Optional env: integer ≥ min; ignores empty/missing env. */
 function optionalIntGe(envName, defaultVal, min) {
   const raw = $env[envName];
@@ -103,19 +113,24 @@ const kasse = parseIntEnv('ACCOUNT_KASSE', $env.ACCOUNT_KASSE);
 const bank = parseIntEnv('ACCOUNT_BANK', $env.ACCOUNT_BANK);
 const erloese = parseIntEnv('ACCOUNT_ERLOESE', $env.ACCOUNT_ERLOESE);
 const gutschein = parseIntEnv('ACCOUNT_GUTSCHEIN', $env.ACCOUNT_GUTSCHEIN);
-/** Odoo tax record for 19% USt (standard); not the Austrian 20% MwSt record. */
-const taxId19 = parseIntEnv('TAX_ID_19', $env.TAX_ID_19);
-const taxId7 = parseIntEnv('TAX_ID_7', $env.TAX_ID_7);
+const ust19 = parseIntEnv('ACCOUNT_UST_19', $env.ACCOUNT_UST_19);
+const ust7 = parseIntEnvOrFallback('ACCOUNT_UST_7', ust19);
+const accountEc = parseIntEnvOrFallback('ACCOUNT_EC', bank);
+const accountKreditkarte = parseIntEnvOrFallback('ACCOUNT_KREDITKARTE', bank);
+const accountRechnung = parseIntEnvOrFallback('ACCOUNT_RECHNUNG', bank);
+
+const journalDefault = parseIntEnv('ODOO_JOURNAL_ID', $env.ODOO_JOURNAL_ID);
+const journalKasse = parseJournalIdOptional('JOURNAL_KASSE');
+const journalBank = parseJournalIdOptional('JOURNAL_BANK');
+const journalVerkauf = parseJournalIdOptional('JOURNAL_VERKAUF');
 
 /** @type {Record<string, unknown>} */
 const config = {
-  /** HelloCash Business API base URL and HTTP timeout (NFR-3). */
   hellocash: {
     baseUrl: String($env.HELLOCASH_BASE_URL).trim().replace(/\/+$/, ''),
     timeoutMs: 30000,
   },
 
-  /** Odoo JSON-RPC target (API key stays in $env.ODOO_API_KEY only). */
   odoo: {
     baseUrl: (() => {
       let u = String($env.ODOO_BASE_URL).trim().replace(/\/+$/, '');
@@ -124,24 +139,36 @@ const config = {
     })(),
     db: String($env.ODOO_DB).trim(),
     uid: parseIntEnv('ODOO_UID', $env.ODOO_UID),
-    journalId: parseIntEnv('ODOO_JOURNAL_ID', $env.ODOO_JOURNAL_ID),
+    journalId: journalDefault,
+    /** Type-specific journals; null when unset — Map to Odoo falls back to journalId. */
+    journalKasse,
+    journalBank,
+    journalVerkauf,
   },
 
-  /** Payment bucket → { debit, credit } for Kasse/Bank/Gutschein → Erlöse. */
+  /** Odoo account.account ids for HelloCash payment routing (legacy + new). */
+  accounts: {
+    kasse,
+    bank,
+    erloese,
+    gutschein,
+    ec: accountEc,
+    kreditkarte: accountKreditkarte,
+    rechnung: accountRechnung,
+    ust19,
+    ust7,
+  },
+
+  /**
+   * Legacy bucket map (withdrawals / tooling). Revenue posting routes by invoice_payment in Map to Odoo.
+   */
   accountMap: {
     CASH: { debit: kasse, credit: erloese },
-    EC: { debit: bank, credit: erloese },
-    CREDITCARD: { debit: bank, credit: erloese },
+    EC: { debit: accountEc, credit: erloese },
+    CREDITCARD: { debit: accountKreditkarte, credit: erloese },
     VOUCHER: { debit: gutschein, credit: erloese },
   },
 
-  /** VAT % → Odoo tax id on revenue line: 7% and 19% only (TAX_ID_7, TAX_ID_19). */
-  taxMap: {
-    7: taxId7,
-    19: taxId19,
-  },
-
-  /** Retry policy for HTTP / RPC (HelloCash fetch + Odoo JSON-RPC via config.retry). */
   retry: {
     maxAttempts: optionalIntGe('SYNC_RPC_MAX_ATTEMPTS', 2, 1),
     intervalMs: optionalIntGe('SYNC_RPC_RETRY_INTERVAL_MS', 2500, 250),
@@ -150,6 +177,16 @@ const config = {
   syncHour: parseIntEnv('SYNC_HOUR', $env.SYNC_HOUR),
 
   errorEmail: String($env.ERROR_EMAIL).trim(),
+
+  /** Flat copies for operators / downstream (same values as accounts.* / odoo.journal*). */
+  ACCOUNT_EC: accountEc,
+  ACCOUNT_KREDITKARTE: accountKreditkarte,
+  ACCOUNT_RECHNUNG: accountRechnung,
+  ACCOUNT_UST_19: ust19,
+  ACCOUNT_UST_7: ust7,
+  JOURNAL_KASSE: journalKasse,
+  JOURNAL_BANK: journalBank,
+  JOURNAL_VERKAUF: journalVerkauf,
 };
 
 return [{ json: config }];
