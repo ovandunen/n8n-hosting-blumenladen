@@ -109,6 +109,84 @@ function parseInvoiceGross(row) {
   return NaN;
 }
 
+/**
+ * Net amount from HelloCash `taxes[]`: sum `tax_net` using the same per-cell parsing as `parseInvoiceGross` header fields.
+ * @param {Record<string, unknown>} row
+ */
+function parseInvoiceNet(row) {
+  if (!Array.isArray(row.taxes)) return NaN;
+  let sum = 0;
+  let any = false;
+  for (const tx of row.taxes) {
+    if (!tx || typeof tx !== 'object') continue;
+    const v = /** @type {{ tax_net?: unknown }} */ (tx).tax_net;
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      sum += Math.abs(v);
+      any = true;
+      continue;
+    }
+    const t = String(v).trim().replace(/\s/g, '');
+    if (!t) continue;
+    let n = NaN;
+    if (/^\d{1,3}(\.\d{3})+,\d{1,4}$/.test(t)) {
+      n = parseFloat(t.replace(/\./g, '').replace(',', '.'));
+    } else if (/^\d+,\d+$/.test(t)) {
+      n = parseFloat(t.replace(',', '.'));
+    } else {
+      n = parseFloat(t);
+    }
+    if (Number.isFinite(n)) {
+      sum += Math.abs(n);
+      any = true;
+    }
+  }
+  if (!any) return NaN;
+  return Math.abs(sum);
+}
+
+/**
+ * VAT from HelloCash `taxes[]`: sum `tax_tax` with the same parsing as net. If no `tax_tax` on any line, use |gross − net|.
+ * @param {Record<string, unknown>} row
+ */
+function parseInvoiceVat(row) {
+  const gross = parseInvoiceGross(row);
+  const net = parseInvoiceNet(row);
+  if (!Array.isArray(row.taxes)) {
+    if (Number.isFinite(gross) && Number.isFinite(net)) return Math.abs(gross - net);
+    return NaN;
+  }
+  let sum = 0;
+  let any = false;
+  for (const tx of row.taxes) {
+    if (!tx || typeof tx !== 'object') continue;
+    const v = /** @type {{ tax_tax?: unknown }} */ (tx).tax_tax;
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      sum += Math.abs(v);
+      any = true;
+      continue;
+    }
+    const t = String(v).trim().replace(/\s/g, '');
+    if (!t) continue;
+    let n = NaN;
+    if (/^\d{1,3}(\.\d{3})+,\d{1,4}$/.test(t)) {
+      n = parseFloat(t.replace(/\./g, '').replace(',', '.'));
+    } else if (/^\d+,\d+$/.test(t)) {
+      n = parseFloat(t.replace(',', '.'));
+    } else {
+      n = parseFloat(t);
+    }
+    if (Number.isFinite(n)) {
+      sum += Math.abs(n);
+      any = true;
+    }
+  }
+  if (any) return Math.abs(sum);
+  if (Number.isFinite(gross) && Number.isFinite(net)) return Math.abs(gross - net);
+  return NaN;
+}
+
 /** @param {Record<string, unknown>} row @param {string[]} keys */
 function pickFirstString(row, keys) {
   for (const k of keys) {
@@ -248,6 +326,12 @@ const out = [];
 const ac = /** @type {Record<string, number>} */ (config.accounts || {});
 const odoo = /** @type {Record<string, unknown>} */ (config.odoo || {});
 
+/** @type {Record<string, unknown>} */
+const invByNum =
+  hc.invoices && typeof hc.invoices === 'object' && !Array.isArray(hc.invoices)
+    ? /** @type {Record<string, unknown>} */ (hc.invoices)
+    : {};
+
 const emptyTax = [];
 
 let skippedCancelled = 0;
@@ -263,13 +347,23 @@ for (const inv of entries) {
   const row = /** @type {Record<string, unknown>} */ (inv);
   const idStr = invoiceIdFrom(row);
   const numStr = invoiceNumberFrom(row);
+  const linked =
+    numStr && invByNum[numStr] && typeof invByNum[numStr] === 'object'
+      ? /** @type {Record<string, unknown>} */ (invByNum[numStr])
+      : null;
+  if (linked && isInvoiceCancelled(linked)) {
+    skippedCancelled++;
+    continue;
+  }
+
   const amount = parseInvoiceGross(row);
   if (!Number.isFinite(amount) || amount === 0) {
     skippedAmount++;
     continue;
   }
 
-  const paymentRaw = invoicePaymentFrom(row);
+  const paymentRow = linked ? Object.assign({}, row, linked) : row;
+  const paymentRaw = invoicePaymentFrom(paymentRow);
   let route = normalizeInvoicePayment(paymentRaw);
   if (!route) {
     console.warn(
@@ -278,18 +372,48 @@ for (const inv of entries) {
     route = 'BAR';
   }
 
-  const tsRaw = invoiceTimestampFrom(row);
+  const tsRaw = invoiceTimestampFrom(linked ? paymentRow : row);
   const date = tsRaw.split(' ')[0] || new Date().toISOString().split('T')[0];
   const ref = invoiceRef(row, amount);
-  const desc = invoiceDescriptionFrom(row);
+  const desc = invoiceDescriptionFrom(linked ? paymentRow : row);
   const lineNameBase = `HC ${numStr || idStr || '—'}: ${desc.substring(0, 50)}`;
 
+  const taxSource =
+    linked && Array.isArray(linked.taxes) && linked.taxes.length > 0 ? linked : row;
+
   let taxRate = 19;
-  if (Array.isArray(row.taxes) && row.taxes.length > 0) {
-    const tax = row.taxes[0];
+  if (Array.isArray(taxSource.taxes) && taxSource.taxes.length > 0) {
+    const tax = taxSource.taxes[0];
     if (tax && typeof tax === 'object' && /** @type {{ tax_taxRate?: unknown }} */ (tax).tax_taxRate !== undefined) {
       taxRate = parseInt(String(/** @type {{ tax_taxRate?: unknown }} */ (tax).tax_taxRate), 10) || 19;
     }
+  }
+
+  let net = parseInvoiceNet(taxSource);
+  let vat = parseInvoiceVat(taxSource);
+  if (
+    linked &&
+    Array.isArray(taxSource.taxes) &&
+    taxSource.taxes.length > 0 &&
+    Number.isFinite(net) &&
+    Number.isFinite(vat)
+  ) {
+    const sum = net + vat;
+    if (Number.isFinite(amount) && sum > 0 && Math.abs(amount - sum) > 0.02) {
+      const scale = amount / sum;
+      net *= scale;
+      vat *= scale;
+    }
+  }
+  const hasTaxBreakdown = Number.isFinite(net) && net > 0 && Number.isFinite(vat) && vat >= 0;
+
+  if (hasTaxBreakdown && Math.abs(net + vat - amount) > 0.02) {
+    console.warn(`${NODE}: gross/net/VAT mismatch > 0.02 for ref ${ref}`, {
+      gross: amount,
+      net,
+      vat,
+      sum: net + vat,
+    });
   }
 
   /** @type {number} */
@@ -315,10 +439,32 @@ for (const inv of entries) {
     odooExtras = { payment_state: 'not_paid' };
   }
 
-  const lineIds = [
-    [0, 0, { account_id: debitAccount, debit: amount, credit: 0, name: lineNameBase, tax_ids: emptyTax }],
-    [0, 0, { account_id: creditAccount, debit: 0, credit: amount, name: lineNameBase, tax_ids: emptyTax }],
-  ];
+  const taxAccount = taxRate === 7 ? ac.ust7 : ac.ust19;
+
+  /** @type {any[]} */
+  let lineIds;
+  if (hasTaxBreakdown) {
+    lineIds = [
+      [0, 0, { account_id: debitAccount, debit: amount, credit: 0, name: lineNameBase, tax_ids: emptyTax }],
+      [0, 0, { account_id: creditAccount, debit: 0, credit: net, name: lineNameBase, tax_ids: emptyTax }],
+      [
+        0,
+        0,
+        {
+          account_id: taxAccount,
+          debit: 0,
+          credit: vat,
+          name: `${lineNameBase} (USt ${taxRate}%)`,
+          tax_ids: emptyTax,
+        },
+      ],
+    ];
+  } else {
+    lineIds = [
+      [0, 0, { account_id: debitAccount, debit: amount, credit: 0, name: lineNameBase, tax_ids: emptyTax }],
+      [0, 0, { account_id: creditAccount, debit: 0, credit: amount, name: lineNameBase, tax_ids: emptyTax }],
+    ];
+  }
 
   /** @type {Record<string, unknown>} */
   const odooVals = {
@@ -337,6 +483,9 @@ for (const inv of entries) {
     paymentMethod: route,
     amount,
     taxRate,
+    hasTaxBreakdown,
+    net: hasTaxBreakdown ? net : undefined,
+    vat: hasTaxBreakdown ? vat : undefined,
   });
 
   out.push({
@@ -380,3 +529,22 @@ if (out.length === 0) {
 }
 
 return out;
+
+/*
+TEST FIXTURE — 119.00 € gross, 19 % USt (manual 3-line split, no Odoo auto-tax):
+
+const row = {
+  invoice_number: 'TEST-119',
+  invoice_payment: 'Bar',
+  invoice_total: '119.00',
+  invoice_cancellation: '0',
+  invoice_timestamp: '2026-05-13 12:00:00',
+  taxes: [{ tax_taxRate: '19', tax_gross: '119.00', tax_net: '100.00', tax_tax: '19.00' }],
+};
+// With amount=gross=119, net=100, vat=19, hasTaxBreakdown=true, debitAccount=1612, creditAccount=1912, taxAccount=ust19:
+// line_ids = [
+//   [0, 0, { account_id: 1612, debit: 119, credit: 0, name: 'HC TEST-119: …', tax_ids: [] }],
+//   [0, 0, { account_id: 1912, debit: 0, credit: 100, name: 'HC TEST-119: …', tax_ids: [] }],
+//   [0, 0, { account_id: <ACCOUNT_UST_19>, debit: 0, credit: 19, name: 'HC TEST-119: … (USt 19%)', tax_ids: [] }],
+// ];
+*/

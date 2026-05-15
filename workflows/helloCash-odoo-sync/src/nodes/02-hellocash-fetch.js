@@ -1,10 +1,11 @@
 /**
- * HelloCash Business — bulk invoice fetch (production).
- * Primary source: GET HELLOCASH_LIST_PATH (default /api/v1/invoices), paginated with limit/offset and optional dateFrom/dateTo.
- * Response body exposes the invoice array as `.invoices` and/or `.entries` (same shape); optional envelope fields (count, limit, offset) are ignored for pagination stop logic.
- * Skips invoice_cancellation === "1". Passes invoices as hellocashData.entries (same shape as before for Map to Odoo).
+ * HelloCash Business — bulk fetch (production).
+ * Primary: GET `/api/v1/invoices` (invoice documents with `taxes[]` / rates when the API provides them), paginated with limit/offset and optional dateFrom/dateTo.
+ * Response rows are `.invoices` and/or `.entries` (same extraction for both). Skips cancelled rows. Output: hellocashData.entries + hellocashData.invoices index by invoice number.
  *
- * Env: HELLOCASH_API_TOKEN (required), HELLOCASH_LIST_PATH (default /api/v1/invoices).
+ * Kassenbuch (`/api/v1/cashBook`) does not carry VAT breakdown; this node does not use it as the primary source so tax-aware posting matches the invoices API.
+ *
+ * Env: HELLOCASH_API_TOKEN (required). Paths are fixed in this node (not env).
  * HELLOCASH_BASE_URL may be origin-only or include /api/v1 — overlapping path segments are merged.
  * HELLOCASH_QUERY_FROM / HELLOCASH_QUERY_TO → dateFrom & dateTo.
  * Pagination: HELLOCASH_CASHBOOK_LIMIT / HELLOCASH_CASHBOOK_OFFSET / HELLOCASH_CASHBOOK_MAX_PAGES (legacy names; same as invoice list).
@@ -135,7 +136,7 @@ function deriveFailureExplanation(status, hint, bodyStr) {
       );
     } else if (statusNum === 404) {
       parts.push(
-        'The server returned 404 — check HELLOCASH_BASE_URL and HELLOCASH_LIST_PATH (default /api/v1/invoices).',
+        'The server returned 404 — check HELLOCASH_BASE_URL (HelloCash paths are /api/v1/cashBook and /api/v1/invoices).',
       );
     } else if (statusNum === 400 || statusNum === 422) {
       parts.push(
@@ -409,7 +410,10 @@ let baseUrl = String(config.hellocash.baseUrl || '')
   .replace(/\/+$/, '');
 if (baseUrl.startsWith('//')) baseUrl = `https:${baseUrl}`;
 
-const listPath = ($env.HELLOCASH_LIST_PATH && String($env.HELLOCASH_LIST_PATH).trim()) || '/api/v1/invoices';
+/** HelloCash Business API paths (fixed; join with HELLOCASH_BASE_URL). */
+const HELLOCASH_PATH_CASHBOOK = '/api/v1/cashBook';
+const HELLOCASH_PATH_INVOICES = '/api/v1/invoices';
+
 const daysBack = parseInt(String($env.HELLOCASH_DAYS_BACK || '1'), 10);
 
 function toDateString(d) {
@@ -435,8 +439,7 @@ const listOffsetRaw =
       ? String($env.HELLOCASH_INVOICES_OFFSET)
       : '0';
 
-const pathNorm = listPath.startsWith('/') ? listPath : `/${listPath}`;
-const listUrlNoQuery = joinBaseUrlAndPath(baseUrl, pathNorm);
+const listUrlNoQuery = joinBaseUrlAndPath(baseUrl, HELLOCASH_PATH_INVOICES);
 
 if (!String(baseUrl || '').trim()) {
   throw new Error(
@@ -467,6 +470,58 @@ function invoiceListFromResponse(res) {
     if (Array.isArray(d.entries)) return d.entries;
   }
   return [];
+}
+
+/** @param {unknown} inv */
+function looksLikeCashBookRow(inv) {
+  if (!inv || typeof inv !== 'object') return false;
+  const o = /** @type {Record<string, unknown>} */ (inv);
+  return 'cashBook_total' in o || 'cashBook_id' in o || 'cashBook_invoice_number' in o;
+}
+
+/** @param {unknown} inv */
+function hasUsableTaxBreakdown(inv) {
+  if (!inv || typeof inv !== 'object') return false;
+  const o = /** @type {Record<string, unknown>} */ (inv);
+  if (!Array.isArray(o.taxes) || o.taxes.length === 0) return false;
+  for (const tx of o.taxes) {
+    if (!tx || typeof tx !== 'object') continue;
+    const t = /** @type {Record<string, unknown>} */ (tx);
+    const net = t.tax_net;
+    const tax = t.tax_tax;
+    if (net !== null && net !== undefined && String(net).trim() !== '') return true;
+    if (tax !== null && tax !== undefined && String(tax).trim() !== '') return true;
+  }
+  return false;
+}
+
+/** Stable key for hellocashData.invoices (number preferred, else id). */
+function invoiceRecordKey(inv) {
+  if (!inv || typeof inv !== 'object') return '';
+  const o = /** @type {Record<string, unknown>} */ (inv);
+  const num = String(
+    o.invoice_number ??
+      o.invoiceNumber ??
+      o.number ??
+      o.document_number ??
+      o.documentNumber ??
+      o.cashBook_invoice_number ??
+      '',
+  ).trim();
+  if (num && num !== '0') return num;
+  const id = String(
+    o.invoice_id ?? o.invoiceId ?? o.invoice_uid ?? o.uid ?? o.cashBook_id ?? o.id ?? '',
+  ).trim();
+  return id;
+}
+
+/** @param {unknown} inv */
+function skipCancelledListRow(inv) {
+  if (!inv || typeof inv !== 'object') return true;
+  const o = /** @type {Record<string, unknown>} */ (inv);
+  if (o.invoice_cancellation === '1') return true;
+  if (o.cashBook_cancellation === '1') return true;
+  return false;
 }
 
 const breaker = createCircuitBreaker({
@@ -575,7 +630,7 @@ for (let page = 1; page <= maxListPages; page++) {
 
   for (const inv of pageInvoices) {
     if (!inv || typeof inv !== 'object') continue;
-    if (/** @type {{ invoice_cancellation?: string }} */ (inv).invoice_cancellation === '1') continue;
+    if (skipCancelledListRow(inv)) continue;
     allInvoices.push(inv);
   }
 
@@ -608,8 +663,9 @@ if (listResponse === undefined) {
     clock: { hour, syncHour: config.syncHour, ignoreSyncHour: ignoreHour },
     token: maskToken(token),
     listUrl: listUrlNoQuery,
-    envPaths: {
-      HELLOCASH_LIST_PATH: listPath,
+    apiPaths: {
+      cashBook: HELLOCASH_PATH_CASHBOOK,
+      invoices: HELLOCASH_PATH_INVOICES,
     },
     attemptHistory: listAttemptHistory,
     lastErrorMessage: lastErr?.message ?? 'unknown',
@@ -654,25 +710,21 @@ if (listResponse === undefined) {
 
 const entries = allInvoices;
 if (entries.length === 0) {
-  return [{ json: { skipped: false, empty: true, message: 'No invoices (after filtering cancellations)' } }];
-}
-
-/** @param {Record<string, unknown>} inv */
-function invoiceRecordKey(inv) {
-  const num = String(
-    inv.invoice_number ?? inv.invoiceNumber ?? inv.number ?? inv.document_number ?? inv.documentNumber ?? '',
-  ).trim();
-  if (num && num !== '0') return num;
-  const id = String(inv.invoice_id ?? inv.invoiceId ?? inv.id ?? '').trim();
-  return id;
+  return [{ json: { skipped: false, empty: true, message: 'No HelloCash entries (after filtering cancellations)' } }];
 }
 
 /** @type {Record<string, object>} */
 const invoicesRecord = {};
 for (const inv of entries) {
+  if (!inv || typeof inv !== 'object') continue;
+  if (looksLikeCashBookRow(inv) && !hasUsableTaxBreakdown(inv)) continue;
   const n = invoiceRecordKey(inv);
-  if (n) invoicesRecord[n] = inv;
+  if (n) invoicesRecord[n] = /** @type {object} */ (inv);
 }
+
+const entryShape =
+  entries[0] && typeof entries[0] === 'object' && looksLikeCashBookRow(entries[0]) ? 'cashbook' : 'invoice';
+const metaSource = entryShape === 'cashbook' ? 'cashbook' : 'invoices';
 
 return [
   {
@@ -684,10 +736,18 @@ return [
         meta: {
           fetchedAt: nowIso(),
           entryCount: entries.length,
-          invoiceCount: entries.length,
+          invoiceCount: Object.keys(invoicesRecord).length,
           daysBack: Number.isFinite(daysBack) ? daysBack : 1,
           syncHour: syncHour,
-          source: 'invoices',
+          source: metaSource,
+          entryShape,
+          apiPaths: {
+            cashBook: HELLOCASH_PATH_CASHBOOK,
+            invoices: HELLOCASH_PATH_INVOICES,
+          },
+          invoiceEnrich: {
+            enabled: false,
+          },
         },
       },
     },

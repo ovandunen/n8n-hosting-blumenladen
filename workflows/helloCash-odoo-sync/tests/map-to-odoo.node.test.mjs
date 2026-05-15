@@ -46,6 +46,42 @@ test('Map to Odoo: Bar — Kasse journal, debit Kasse, credit Erlöse, ref from 
   assert.ok(!Object.prototype.hasOwnProperty.call(out[0].json.odooVals, 'payment_state'));
 });
 
+test('Map to Odoo: 3-line posting when taxes include tax_net and tax_tax (19%)', () => {
+  const inv = baseInvoice({
+    invoice_payment: 'Bar',
+    invoice_number: 'INV-119',
+    invoice_total: '119.00',
+    taxes: [{ tax_taxRate: '19', tax_gross: '119', tax_net: '100.00', tax_tax: '19.00' }],
+  });
+  const out = runSyncCodeNode('03-map-to-odoo.js', {
+    $: mockConfigLoader$(sampleConfigJson()),
+    items: [{ json: { skipped: false, hellocashData: { entries: [inv], invoices: {} } } }],
+  });
+  assert.equal(out[0].json.odooVals.line_ids.length, 3);
+  assert.equal(out[0].json.odooVals.line_ids[0][2].debit, 119);
+  assert.equal(out[0].json.odooVals.line_ids[0][2].credit, 0);
+  assert.equal(out[0].json.odooVals.line_ids[1][2].credit, 100);
+  assert.equal(out[0].json.odooVals.line_ids[1][2].account_id, 1912);
+  assert.equal(out[0].json.odooVals.line_ids[2][2].credit, 19);
+  assert.equal(out[0].json.odooVals.line_ids[2][2].account_id, 3800);
+  assert.ok(String(out[0].json.odooVals.line_ids[2][2].name).includes('USt 19%'));
+});
+
+test('Map to Odoo: 3-line posting uses ust7 when tax_taxRate is 7', () => {
+  const inv = baseInvoice({
+    invoice_payment: 'Bar',
+    invoice_number: 'INV-7',
+    invoice_total: '10.70',
+    taxes: [{ tax_taxRate: '7', tax_net: '10.00', tax_tax: '0.70' }],
+  });
+  const out = runSyncCodeNode('03-map-to-odoo.js', {
+    $: mockConfigLoader$(sampleConfigJson()),
+    items: [{ json: { skipped: false, hellocashData: { entries: [inv], invoices: {} } } }],
+  });
+  assert.equal(out[0].json.odooVals.line_ids[2][2].account_id, 3807);
+  assert.ok(String(out[0].json.odooVals.line_ids[2][2].name).includes('USt 7%'));
+});
+
 test('Map to Odoo: ref uses number and id when invoice_number / invoice_id absent', () => {
   const out = runSyncCodeNode('03-map-to-odoo.js', {
     $: mockConfigLoader$(sampleConfigJson()),
@@ -287,4 +323,38 @@ test('Map to Odoo: mappedEmpty when no entries', () => {
     ],
   });
   assert.equal(out[0].json.mappedEmpty, true);
+});
+
+test('Map to Odoo: cashbook row + hellocashData.invoices uses linked taxes for 3-line posting', () => {
+  const cashRow = {
+    cashBook_id: 'cb1',
+    cashBook_invoice_number: '1986',
+    cashBook_total: '119.00',
+    cashBook_timestamp: '2026-05-10 10:00:00',
+    cashBook_description: 'POS',
+    invoice_cancellation: '0',
+  };
+  const fullInv = {
+    invoice_id: 'inv1',
+    invoice_number: '1986',
+    invoice_payment: 'Bar',
+    invoice_total: '119.00',
+    invoice_cancellation: '0',
+    taxes: [{ tax_taxRate: '19', tax_net: '100.00', tax_tax: '19.00' }],
+  };
+  const out = runSyncCodeNode('03-map-to-odoo.js', {
+    $: mockConfigLoader$(sampleConfigJson()),
+    items: [
+      {
+        json: {
+          skipped: false,
+          hellocashData: { entries: [cashRow], invoices: { '1986': fullInv } },
+        },
+      },
+    ],
+  });
+  assert.equal(out[0].json.odooVals.line_ids.length, 3);
+  assert.equal(out[0].json.odooVals.line_ids[0][2].debit, 119);
+  assert.equal(out[0].json.odooVals.line_ids[1][2].credit, 100);
+  assert.equal(out[0].json.odooVals.line_ids[2][2].credit, 19);
 });

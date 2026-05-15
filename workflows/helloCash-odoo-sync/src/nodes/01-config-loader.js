@@ -17,6 +17,7 @@ const REQUIRED = [
   'ACCOUNT_BANK',
   'ACCOUNT_ERLOESE',
   'ACCOUNT_GUTSCHEIN',
+  'ACCOUNT_UST_19',
   'SYNC_HOUR',
   'ERROR_EMAIL',
 ];
@@ -112,6 +113,8 @@ const kasse = parseIntEnv('ACCOUNT_KASSE', $env.ACCOUNT_KASSE);
 const bank = parseIntEnv('ACCOUNT_BANK', $env.ACCOUNT_BANK);
 const erloese = parseIntEnv('ACCOUNT_ERLOESE', $env.ACCOUNT_ERLOESE);
 const gutschein = parseIntEnv('ACCOUNT_GUTSCHEIN', $env.ACCOUNT_GUTSCHEIN);
+const ust19 = parseIntEnv('ACCOUNT_UST_19', $env.ACCOUNT_UST_19);
+const ust7 = parseIntEnvOrFallback('ACCOUNT_UST_7', ust19);
 const accountEc = parseIntEnvOrFallback('ACCOUNT_EC', bank);
 const accountKreditkarte = parseIntEnvOrFallback('ACCOUNT_KREDITKARTE', bank);
 const accountRechnung = parseIntEnvOrFallback('ACCOUNT_RECHNUNG', bank);
@@ -152,6 +155,8 @@ const config = {
     ec: accountEc,
     kreditkarte: accountKreditkarte,
     rechnung: accountRechnung,
+    ust19,
+    ust7,
   },
 
   /**
@@ -177,6 +182,8 @@ const config = {
   ACCOUNT_EC: accountEc,
   ACCOUNT_KREDITKARTE: accountKreditkarte,
   ACCOUNT_RECHNUNG: accountRechnung,
+  ACCOUNT_UST_19: ust19,
+  ACCOUNT_UST_7: ust7,
   JOURNAL_KASSE: journalKasse,
   JOURNAL_BANK: journalBank,
   JOURNAL_VERKAUF: journalVerkauf,

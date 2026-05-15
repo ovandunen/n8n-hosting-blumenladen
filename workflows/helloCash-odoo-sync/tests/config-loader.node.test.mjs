@@ -18,8 +18,12 @@ test('Config Loader: returns config with expected sections', () => {
   assert.equal(c.accounts.ec, 1466);
   assert.equal(c.accounts.kreditkarte, 1466);
   assert.equal(c.accounts.rechnung, 1464);
+  assert.equal(c.accounts.ust19, 3800);
+  assert.equal(c.accounts.ust7, 3807);
   assert.equal(c.ACCOUNT_EC, 1466);
   assert.equal(c.ACCOUNT_RECHNUNG, 1464);
+  assert.equal(c.ACCOUNT_UST_19, 3800);
+  assert.equal(c.ACCOUNT_UST_7, 3807);
   assert.equal(c.JOURNAL_KASSE, null);
   assert.equal(c.odoo.journalBank, null);
   assert.equal(c.odoo.journalVerkauf, null);
@@ -52,12 +56,27 @@ test('Config Loader: throws when a required env var is missing', () => {
   assert.throws(() => runSyncCodeNode('01-config-loader.js', { $env: bad }), /HELLOCASH_BASE_URL/);
 });
 
+test('Config Loader: throws when ACCOUNT_UST_19 missing', () => {
+  const bad = { ...validConfigEnv };
+  delete bad.ACCOUNT_UST_19;
+  assert.throws(() => runSyncCodeNode('01-config-loader.js', { $env: bad }), /ACCOUNT_UST_19/);
+});
+
 test('Config Loader: ACCOUNT_RECHNUNG optional — defaults to ACCOUNT_BANK when unset', () => {
   const env = { ...validConfigEnv };
   delete env.ACCOUNT_RECHNUNG;
   const out = runSyncCodeNode('01-config-loader.js', { $env: env });
   assert.equal(out[0].json.accounts.rechnung, 1200);
   assert.equal(out[0].json.ACCOUNT_RECHNUNG, 1200);
+});
+
+test('Config Loader: ACCOUNT_UST_7 optional — defaults to ACCOUNT_UST_19 when unset', () => {
+  const env = { ...validConfigEnv };
+  delete env.ACCOUNT_UST_7;
+  const out = runSyncCodeNode('01-config-loader.js', { $env: env });
+  assert.equal(out[0].json.accounts.ust19, 3800);
+  assert.equal(out[0].json.accounts.ust7, 3800);
+  assert.equal(out[0].json.ACCOUNT_UST_7, 3800);
 });
 
 test('Config Loader: strips trailing /jsonrpc from ODOO_BASE_URL', () => {

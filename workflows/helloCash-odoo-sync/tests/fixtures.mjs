@@ -21,6 +21,8 @@ export const validConfigEnv = {
   ACCOUNT_EC: '1466',
   ACCOUNT_KREDITKARTE: '1466',
   ACCOUNT_RECHNUNG: '1464',
+  ACCOUNT_UST_19: '3800',
+  ACCOUNT_UST_7: '3807',
   SYNC_HOUR: '2',
   ERROR_EMAIL: 'ops@example.com',
 };
@@ -49,6 +51,8 @@ export function sampleConfigJson() {
       ec: 1466,
       kreditkarte: 1466,
       rechnung: 1464,
+      ust19: 3800,
+      ust7: 3807,
     },
     accountMap: {
       CASH: { debit: 1612, credit: 1912 },
@@ -63,6 +67,8 @@ export function sampleConfigJson() {
     ACCOUNT_EC: 1466,
     ACCOUNT_KREDITKARTE: 1466,
     ACCOUNT_RECHNUNG: 1464,
+    ACCOUNT_UST_19: 3800,
+    ACCOUNT_UST_7: 3807,
     JOURNAL_KASSE: 101,
     JOURNAL_BANK: 102,
     JOURNAL_VERKAUF: 103,
