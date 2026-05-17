@@ -1,5 +1,5 @@
 /**
- * Run n8n Code node bodies (sync or async) with injected $env, $, items, this.helpers.
+ * Run n8n Code node bodies (sync or async) with injected $env, $, items; `this` = ctx.self (helpers.httpRequest).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,6 +45,7 @@ export async function runAsyncCodeNode(fileName, ctx = {}) {
       },
     },
   };
+
   const fn = new AsyncFunction('$env', '$', 'items', code);
   return fn.call(self, $env, $, items);
 }

@@ -1,6 +1,8 @@
 docker-compose/withPostgres/.env
 .cursor/
+.env.bak
 .DS_STORE
 docker-compose/withPostgres/.env.bak
 credentials
-.env.bak
+.env?*
+*.swp
